@@ -29,7 +29,6 @@ from prompt_toolkit.application.application import _AppResult
 from prompt_toolkit.application.application import (
     _CombinedRegistry as _PtkCombinedRegistry,
 )
-from prompt_toolkit.enums import EditingMode as PtkEditingMode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -111,7 +110,10 @@ class Application(PtkApplication, Generic[_AppResult]):
             mouse_support=mouse_support,
             enable_page_navigation_bindings=enable_page_navigation_bindings,
             paste_mode=paste_mode,
-            editing_mode=PtkEditingMode(editing_mode.value),
+            # Passed through unchanged: ``apptk.enums.EditingMode`` shims the upstream
+            # enum, adding HELIX and MICRO. Round-tripping through the upstream enum
+            # would raise ``ValueError`` for those two if the shim were not applied.
+            editing_mode=editing_mode,
             erase_when_done=erase_when_done,
             reverse_vi_search_direction=reverse_vi_search_direction,
             min_redraw_interval=min_redraw_interval,

@@ -16,10 +16,17 @@ from apptk.key_binding.helix_state import InputMode as HelixInputMode
 from apptk.key_binding.micro_state import MicroInputMode
 
 __all__ = [
+    "helix_goto_mode",
     "helix_insert_mode",
+    "helix_match_mode",
     "helix_mode",
     "helix_navigation_mode",
+    "helix_normal_mode",
     "helix_replace_mode",
+    "helix_select_mode",
+    "helix_space_mode",
+    "helix_view_mode",
+    "helix_window_mode",
     "insert_mode",
     "micro_insert_mode",
     "micro_mode",
@@ -44,6 +51,8 @@ def helix_insert_mode() -> bool:
     from apptk.application.current import get_app
 
     app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
     return app.helix_state.input_mode == HelixInputMode.INSERT
 
 
@@ -53,6 +62,8 @@ def helix_navigation_mode() -> bool:
     from apptk.application.current import get_app
 
     app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
     return app.helix_state.input_mode == HelixInputMode.NAVIGATION
 
 
@@ -62,10 +73,95 @@ def helix_replace_mode() -> bool:
     from apptk.application.current import get_app
 
     app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
     return app.helix_state.input_mode in (
         HelixInputMode.REPLACE,
         HelixInputMode.REPLACE_SINGLE,
     )
+
+
+@Condition
+def helix_normal_mode() -> bool:
+    """Determine if in helix normal mode: navigation, without explicit select mode."""
+    from apptk.application.current import get_app
+
+    app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
+    return (
+        app.helix_state.input_mode == HelixInputMode.NAVIGATION
+        and not app.helix_state.select_mode
+    )
+
+
+@Condition
+def helix_select_mode() -> bool:
+    """Determine if in helix select/extend mode, entered via ``v``."""
+    from apptk.application.current import get_app
+
+    app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
+    return (
+        app.helix_state.input_mode == HelixInputMode.NAVIGATION
+        and app.helix_state.select_mode
+    )
+
+
+@Condition
+def helix_goto_mode() -> bool:
+    """Determine if the helix goto sub-mode is active."""
+    from apptk.application.current import get_app
+
+    app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
+    return app.helix_state.goto_mode
+
+
+@Condition
+def helix_match_mode() -> bool:
+    """Determine if the helix match sub-mode is active."""
+    from apptk.application.current import get_app
+
+    app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
+    return app.helix_state.match_mode
+
+
+@Condition
+def helix_view_mode() -> bool:
+    """Determine if the helix view sub-mode is active."""
+    from apptk.application.current import get_app
+
+    app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
+    return app.helix_state.view_mode
+
+
+@Condition
+def helix_window_mode() -> bool:
+    """Determine if the helix window sub-mode is active."""
+    from apptk.application.current import get_app
+
+    app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
+    return app.helix_state.window_mode
+
+
+@Condition
+def helix_space_mode() -> bool:
+    """Determine if the helix space sub-mode is active."""
+    from apptk.application.current import get_app
+
+    app = get_app()
+    if app.editing_mode != EditingMode.HELIX:
+        return False
+    return app.helix_state.space_mode
 
 
 @Condition
@@ -107,18 +203,16 @@ insert_mode = (
     (vi_mode & vi_insert_mode)
     | (emacs_mode & emacs_insert_mode)
     | (micro_mode & micro_insert_mode)
-    | (helix_mode & helix_insert_mode)
+    | helix_insert_mode
 )
 
 """Determine if any binding style is in replace mode."""
 replace_mode = (
-    (micro_mode & micro_replace_mode)
-    | (vi_mode & vi_replace_mode)
-    | (helix_mode & helix_replace_mode)
+    (micro_mode & micro_replace_mode) | (vi_mode & vi_replace_mode) | helix_replace_mode
 )
 
 """Determine if any binding style is in navigation mode."""
-navigation_mode = (vi_mode & vi_navigation_mode) | (helix_mode & helix_navigation_mode)
+navigation_mode = (vi_mode & vi_navigation_mode) | helix_navigation_mode
 
 """Determine if the current editing mode is exitable."""
 exitable_mode = (

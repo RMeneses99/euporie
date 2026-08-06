@@ -16,13 +16,13 @@ Key differences from Vi:
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from apptk.application.current import get_app
 from apptk.buffer import indent, unindent
 from apptk.clipboard import ClipboardData
-from apptk.commands import add_cmd, get_cmd
-from apptk.enums import EditingMode
+from apptk.commands import COMMANDS, add_cmd, get_cmd
 from apptk.filters import (
     Condition,
     buffer_has_focus,
@@ -36,11 +36,43 @@ from apptk.filters.app import (
     is_searching,
 )
 from apptk.filters.buffer import is_returnable
+from apptk.filters.modes import (
+    helix_goto_mode,
+    helix_insert_mode,
+    helix_match_mode,
+    helix_mode,
+    helix_normal_mode,
+    helix_select_mode,
+    helix_space_mode,
+    helix_view_mode,
+    helix_window_mode,
+)
 from apptk.key_binding import ConditionalKeyBindings, KeyBindings
+from apptk.key_binding.bindings.helix_selections import (
+    align_ranges,
+    apply_edit_at_ranges,
+    collapse_to_primary,
+    copy_range_to_line,
+    get_selections,
+    select_regex_within,
+    set_selections,
+    split_on_newlines,
+    split_on_regex,
+    text_at_ranges,
+    trim_ranges,
+)
+from apptk.key_binding.bindings.helix_textobjects import (
+    BRACKET_PAIRS,
+    resolve_text_object,
+)
 from apptk.key_binding.helix_state import CharacterFind, InputMode
+from apptk.key_binding.key_processor import KeyPress
 from apptk.selection import SelectionState, SelectionType
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from apptk.buffer import Buffer
     from apptk.key_binding.key_bindings import KeyBindingsBase
     from apptk.key_binding.key_processor import KeyPressEvent
 
@@ -50,90 +82,6 @@ __all__ = [
 ]
 
 log = logging.getLogger(__name__)
-
-
-# Helix mode conditions
-
-
-@Condition
-def helix_mode() -> bool:
-    """Check if Helix editing mode is active."""
-    app = get_app()
-    return app.editing_mode == EditingMode.HELIX
-
-
-@Condition
-def helix_normal_mode() -> bool:
-    """Check if in Helix normal mode (navigation, not in explicit select mode)."""
-    if not helix_mode():
-        return False
-    app = get_app()
-    return (
-        app.helix_state.input_mode == InputMode.NAVIGATION
-        and not app.helix_state.select_mode
-    )
-
-
-@Condition
-def helix_insert_mode() -> bool:
-    """Check if in Helix insert mode."""
-    if not helix_mode():
-        return False
-    app = get_app()
-    return app.helix_state.input_mode == InputMode.INSERT
-
-
-@Condition
-def helix_select_mode() -> bool:
-    """Check if in Helix select/extend mode (entered via ``v``)."""
-    if not helix_mode():
-        return False
-    app = get_app()
-    return (
-        app.helix_state.input_mode == InputMode.NAVIGATION
-        and app.helix_state.select_mode
-    )
-
-
-@Condition
-def helix_replace_mode() -> bool:
-    """Check if in Helix replace mode."""
-    if not helix_mode():
-        return False
-    app = get_app()
-    return app.helix_state.input_mode == InputMode.REPLACE
-
-
-@Condition
-def helix_goto_mode() -> bool:
-    """Check if in Helix goto mode."""
-    if not helix_mode():
-        return False
-    return get_app().helix_state.goto_mode
-
-
-@Condition
-def helix_match_mode() -> bool:
-    """Check if in Helix match mode."""
-    if not helix_mode():
-        return False
-    return get_app().helix_state.match_mode
-
-
-@Condition
-def helix_view_mode() -> bool:
-    """Check if in Helix view mode."""
-    if not helix_mode():
-        return False
-    return get_app().helix_state.view_mode
-
-
-@Condition
-def helix_window_mode() -> bool:
-    """Check if in Helix window mode."""
-    if not helix_mode():
-        return False
-    return get_app().helix_state.window_mode
 
 
 # Helper functions
@@ -601,6 +549,105 @@ def helix_handle_find_char(event: KeyPressEvent) -> None:
             buff.cursor_position += pos + 1
 
 
+# Registers and macros
+
+
+@Condition
+def waiting_for_register() -> bool:
+    """Check whether a register name is being awaited after ``"``."""
+    if not helix_mode():
+        return False
+    return get_app().helix_state.waiting_for_register
+
+
+@Condition
+def helix_recording_macro() -> bool:
+    """Check whether a Helix macro is currently being recorded."""
+    if not helix_mode():
+        return False
+    return bool(get_app().helix_state.recording_register)
+
+
+@add_cmd(
+    keys=['"'],
+    filter=(helix_normal_mode | helix_select_mode) & ~waiting_for_register,
+    hidden=True,
+    name="helix-select-register",
+)
+def helix_select_register(event: KeyPressEvent) -> None:
+    """Await a register name for the next yank, paste or delete."""
+    event.app.helix_state.waiting_for_register = True
+
+
+@add_cmd(
+    keys=["<any>"],
+    filter=(helix_normal_mode | helix_select_mode) & waiting_for_register,
+    hidden=True,
+    eager=True,
+    name="helix-handle-register",
+)
+def helix_handle_register(event: KeyPressEvent) -> None:
+    """Record the register named by the key press following ``"``."""
+    helix_state = event.app.helix_state
+    helix_state.waiting_for_register = False
+    char = event.data
+    if char and len(char) == 1 and char.isalnum():
+        helix_state.pending_register = char
+    else:
+        event.app.output.bell()
+
+
+@add_cmd(
+    keys=["q"],
+    filter=helix_normal_mode & ~helix_recording_macro,
+    hidden=True,
+    name="helix-record-macro",
+)
+def helix_record_macro(event: KeyPressEvent) -> None:
+    """Begin recording a macro into the pending register, or ``@`` by default."""
+    helix_state = event.app.helix_state
+    helix_state.recording_register = helix_state.take_register() or "@"
+    helix_state.current_recording = ""
+
+
+@add_cmd(
+    keys=["q"],
+    filter=helix_normal_mode & helix_recording_macro,
+    hidden=True,
+    name="helix-stop-record-macro",
+)
+def helix_stop_record_macro(event: KeyPressEvent) -> None:
+    """Stop recording and store the macro in its register."""
+    helix_state = event.app.helix_state
+    register = helix_state.recording_register
+    if register is not None:
+        helix_state.named_registers[register] = ClipboardData(
+            helix_state.current_recording
+        )
+    helix_state.recording_register = None
+    helix_state.current_recording = ""
+
+
+@add_cmd(
+    keys=["Q"],
+    filter=helix_normal_mode & ~helix_recording_macro,
+    hidden=True,
+    record_in_macro=False,
+    name="helix-play-macro",
+)
+def helix_play_macro(event: KeyPressEvent) -> None:
+    """Replay the macro held in the pending register, or ``@`` by default."""
+    helix_state = event.app.helix_state
+    register = helix_state.take_register() or "@"
+    data = helix_state.named_registers.get(register)
+    if data is None or not data.text:
+        event.app.output.bell()
+        return
+    event.app.key_processor.feed_multiple(
+        [KeyPress(key, key) for key in data.text], first=True
+    )
+
+
 # Selection mode (v)
 
 
@@ -631,6 +678,36 @@ def helix_exit_select_mode(event: KeyPressEvent) -> None:
 # Changes
 
 
+def store_clipboard_data(event: KeyPressEvent, data: ClipboardData) -> None:
+    """Store yanked or deleted text in the pending register, or the clipboard.
+
+    Args:
+        event: The triggering key-press event.
+        data: The text to store.
+    """
+    register = event.app.helix_state.take_register()
+    if register is None:
+        event.app.clipboard.set_data(data)
+    else:
+        event.app.helix_state.named_registers[register] = data
+
+
+def fetch_clipboard_data(event: KeyPressEvent) -> ClipboardData:
+    """Fetch text to paste from the pending register, or the clipboard.
+
+    Args:
+        event: The triggering key-press event.
+
+    Returns:
+        The stored text. An empty clipboard entry is returned for a register
+        which has never been written to.
+    """
+    register = event.app.helix_state.take_register()
+    if register is None:
+        return event.app.clipboard.get_data()
+    return event.app.helix_state.named_registers.get(register, ClipboardData(""))
+
+
 @add_cmd(
     keys=["d"],
     filter=(helix_normal_mode | helix_select_mode) & has_selection,
@@ -638,10 +715,21 @@ def helix_exit_select_mode(event: KeyPressEvent) -> None:
     name="helix-delete-selection",
 )
 def helix_delete_selection(event: KeyPressEvent) -> None:
-    """Delete selection."""
+    """Delete every selection."""
     buff = event.current_buffer
-    data = buff.cut_selection()
-    event.app.clipboard.set_data(data)
+    ranges = get_selections(buff)
+
+    if len(ranges) < 2:
+        store_clipboard_data(event, buff.cut_selection())
+        return
+
+    store_clipboard_data(
+        event, ClipboardData("\n".join(text_at_ranges(buff.text, ranges)))
+    )
+    new_ranges = apply_edit_at_ranges(buff, ranges, [""])
+    # Every range is now empty and collapsed onto the same points; keep the
+    # cursors so a following insert applies at each site.
+    set_selections(buff, new_ranges)
 
 
 @add_cmd(
@@ -664,10 +752,18 @@ def helix_delete_char(event: KeyPressEvent) -> None:
     name="helix-change-selection",
 )
 def helix_change_selection(event: KeyPressEvent) -> None:
-    """Change selection (delete and enter insert mode)."""
+    """Change every selection: delete it and enter insert mode."""
     buff = event.current_buffer
-    data = buff.cut_selection()
-    event.app.clipboard.set_data(data)
+    ranges = get_selections(buff)
+
+    if len(ranges) < 2:
+        store_clipboard_data(event, buff.cut_selection())
+    else:
+        store_clipboard_data(
+            event, ClipboardData("\n".join(text_at_ranges(buff.text, ranges)))
+        )
+        set_selections(buff, apply_edit_at_ranges(buff, ranges, [""]))
+
     event.app.helix_state.input_mode = InputMode.INSERT
 
 
@@ -752,7 +848,35 @@ def helix_replace_with_yanked(event: KeyPressEvent) -> None:
     """Replace selection with yanked text."""
     buff = event.current_buffer
     buff.cut_selection()
-    buff.paste_clipboard_data(event.app.clipboard.get_data())
+    buff.paste_clipboard_data(fetch_clipboard_data(event))
+
+
+def _transform_selections(
+    event: KeyPressEvent, transform: Callable[[str], str], *, keep_selection: bool
+) -> bool:
+    """Apply a text transform to every selection as one undoable edit.
+
+    Args:
+        event: The triggering key-press event.
+        transform: The transform to apply to each selection's text.
+        keep_selection: Leave the transformed ranges selected afterwards.
+
+    Returns:
+        True if a multi-selection edit was applied, False when there are fewer
+        than two selections and the caller should handle the single case.
+    """
+    buff = event.current_buffer
+    ranges = get_selections(buff)
+    if len(ranges) < 2:
+        return False
+
+    replacements = [transform(part) for part in text_at_ranges(buff.text, ranges)]
+    new_ranges = apply_edit_at_ranges(buff, ranges, replacements)
+    if keep_selection:
+        set_selections(buff, new_ranges)
+    else:
+        set_selections(buff, [])
+    return True
 
 
 @add_cmd(
@@ -762,8 +886,11 @@ def helix_replace_with_yanked(event: KeyPressEvent) -> None:
     name="helix-switch-case",
 )
 def helix_switch_case(event: KeyPressEvent) -> None:
-    """Switch case of selection or character."""
+    """Switch the case of every selection, or of the character under the cursor."""
     buff = event.current_buffer
+    if _transform_selections(event, str.swapcase, keep_selection=True):
+        return
+
     selection_state = buff.selection_state
     if selection_state:
         for start, end in buff.document.selection_ranges():
@@ -782,8 +909,10 @@ def helix_switch_case(event: KeyPressEvent) -> None:
     name="helix-to-lowercase",
 )
 def helix_to_lowercase(event: KeyPressEvent) -> None:
-    """Convert selection to lowercase."""
+    """Convert every selection to lowercase."""
     buff = event.current_buffer
+    if _transform_selections(event, str.lower, keep_selection=False):
+        return
     if buff.selection_state:
         for start, end in buff.document.selection_ranges():
             buff.transform_region(start, end, lambda s: s.lower())
@@ -797,8 +926,10 @@ def helix_to_lowercase(event: KeyPressEvent) -> None:
     name="helix-to-uppercase",
 )
 def helix_to_uppercase(event: KeyPressEvent) -> None:
-    """Convert selection to uppercase."""
+    """Convert every selection to uppercase."""
     buff = event.current_buffer
+    if _transform_selections(event, str.upper, keep_selection=False):
+        return
     if buff.selection_state:
         for start, end in buff.document.selection_ranges():
             buff.transform_region(start, end, lambda s: s.upper())
@@ -815,12 +946,20 @@ def helix_to_uppercase(event: KeyPressEvent) -> None:
     name="helix-yank",
 )
 def helix_yank(event: KeyPressEvent) -> None:
-    """Yank selection."""
+    """Yank every selection, joining them with newlines."""
     buff = event.current_buffer
+    ranges = get_selections(buff)
+
+    if len(ranges) > 1:
+        store_clipboard_data(
+            event, ClipboardData("\n".join(text_at_ranges(buff.text, ranges)))
+        )
+        return
+
     # Save selection state since copy_selection clears it
     selection_state = buff.selection_state
     data = buff.copy_selection()
-    event.app.clipboard.set_data(data)
+    store_clipboard_data(event, data)
     # Restore selection state to maintain the selection
     buff.selection_state = selection_state
 
@@ -835,7 +974,45 @@ def helix_yank_line(event: KeyPressEvent) -> None:
     """Yank current line."""
     buff = event.current_buffer
     text = "\n".join(buff.document.lines_from_current[: event.arg])
-    event.app.clipboard.set_data(ClipboardData(text, SelectionType.LINES))
+    store_clipboard_data(event, ClipboardData(text, SelectionType.LINES))
+
+
+def _paste_across_selections(
+    event: KeyPressEvent, data: ClipboardData, *, before: bool
+) -> bool:
+    """Paste into every selection, distributing the clipboard line-wise.
+
+    When the clipboard holds one line per selection, each selection receives its
+    own line - this is how a multi-selection yank round-trips. Otherwise the whole
+    clipboard is pasted at every selection.
+
+    Args:
+        event: The triggering key-press event.
+        data: The clipboard contents to paste.
+        before: Insert at the start of each selection rather than after its end.
+
+    Returns:
+        True if a multi-selection paste was applied, False when there are fewer
+        than two selections and the caller should handle the single case.
+    """
+    buff = event.current_buffer
+    ranges = get_selections(buff)
+    if len(ranges) < 2:
+        return False
+
+    lines = data.text.split("\n")
+    if len(lines) == len(ranges):
+        replacements = [line * event.arg for line in lines]
+    else:
+        replacements = [data.text * event.arg] * len(ranges)
+
+    # Paste alongside each selection rather than replacing it, by collapsing each
+    # range to a zero-width point at the chosen edge.
+    ordered = sorted(min(r) if before else max(r) for r in ranges)
+    points = [(position, position) for position in ordered]
+
+    set_selections(buff, apply_edit_at_ranges(buff, points, replacements))
+    return True
 
 
 @add_cmd(
@@ -845,9 +1022,11 @@ def helix_yank_line(event: KeyPressEvent) -> None:
     name="helix-paste-after",
 )
 def helix_paste_after(event: KeyPressEvent) -> None:
-    """Paste after selection."""
+    """Paste after every selection."""
     buff = event.current_buffer
-    data = event.app.clipboard.get_data()
+    data = fetch_clipboard_data(event)
+    if _paste_across_selections(event, data, before=False):
+        return
     pasted_text = data.text * event.arg
     if data.type == SelectionType.LINES:
         # Line paste: insert on new line below current line
@@ -874,9 +1053,11 @@ def helix_paste_after(event: KeyPressEvent) -> None:
     name="helix-paste-before",
 )
 def helix_paste_before(event: KeyPressEvent) -> None:
-    """Paste before selection."""
+    """Paste before every selection."""
     buff = event.current_buffer
-    data = event.app.clipboard.get_data()
+    data = fetch_clipboard_data(event)
+    if _paste_across_selections(event, data, before=True):
+        return
     pasted_text = data.text * event.arg
     if data.type == SelectionType.LINES:
         # Line paste: insert on new line above current line
@@ -1231,6 +1412,292 @@ def helix_exit_match_mode(event: KeyPressEvent) -> None:
     _exit_helix_submodes()
 
 
+# Match-mode text objects, surround and case-insensitive pairs
+
+
+@Condition
+def waiting_for_text_object() -> bool:
+    """Check whether a text-object key is awaited after ``mi`` or ``ma``."""
+    if not helix_mode():
+        return False
+    return get_app().helix_state.pending_text_object is not None
+
+
+@Condition
+def waiting_for_surround() -> bool:
+    """Check whether a surround character is awaited after ``ms``, ``md`` or ``mr``."""
+    if not helix_mode():
+        return False
+    return get_app().helix_state.pending_surround is not None
+
+
+@add_cmd(
+    keys=["i"],
+    filter=helix_match_mode & ~waiting_for_text_object,
+    hidden=True,
+    name="helix-match-inside",
+)
+def helix_match_inside(event: KeyPressEvent) -> None:
+    """Await a text object to select inside."""
+    event.app.helix_state.pending_text_object = "inside"
+
+
+@add_cmd(
+    keys=["a"],
+    filter=helix_match_mode & ~waiting_for_text_object,
+    hidden=True,
+    name="helix-match-around",
+)
+def helix_match_around(event: KeyPressEvent) -> None:
+    """Await a text object to select around."""
+    event.app.helix_state.pending_text_object = "around"
+
+
+@add_cmd(
+    keys=["<any>"],
+    filter=helix_match_mode & waiting_for_text_object,
+    hidden=True,
+    eager=True,
+    name="helix-handle-text-object",
+)
+def helix_handle_text_object(event: KeyPressEvent) -> None:
+    """Select the text object named by the key press."""
+    helix_state = event.app.helix_state
+    around = helix_state.pending_text_object == "around"
+    helix_state.pending_text_object = None
+    _exit_helix_submodes()
+
+    buff = event.current_buffer
+    ranges = [
+        found
+        for anchor, head in get_selections(buff)
+        if (
+            found := resolve_text_object(
+                buff.text,
+                head if head == anchor else max(anchor, head) - 1,
+                event.data,
+                around=around,
+            )
+        )
+        is not None
+    ]
+    if ranges:
+        set_selections(buff, ranges)
+    else:
+        event.app.output.bell()
+
+
+@add_cmd(
+    keys=["s"],
+    filter=helix_match_mode & ~waiting_for_surround,
+    hidden=True,
+    name="helix-surround-add",
+)
+def helix_surround_add(event: KeyPressEvent) -> None:
+    """Await a character to surround the selection with."""
+    event.app.helix_state.pending_surround = "add"
+
+
+@add_cmd(
+    keys=["d"],
+    filter=helix_match_mode & ~waiting_for_surround,
+    hidden=True,
+    name="helix-surround-delete",
+)
+def helix_surround_delete(event: KeyPressEvent) -> None:
+    """Await a character whose surrounding pair should be removed."""
+    event.app.helix_state.pending_surround = "delete"
+
+
+@add_cmd(
+    keys=["r"],
+    filter=helix_match_mode & ~waiting_for_surround,
+    hidden=True,
+    name="helix-surround-replace",
+)
+def helix_surround_replace(event: KeyPressEvent) -> None:
+    """Await the character whose surrounding pair should be replaced."""
+    event.app.helix_state.pending_surround = "replace-from"
+
+
+@add_cmd(
+    keys=["<any>"],
+    filter=helix_match_mode & waiting_for_surround,
+    hidden=True,
+    eager=True,
+    name="helix-handle-surround",
+)
+def helix_handle_surround(event: KeyPressEvent) -> None:
+    """Apply a pending surround operation using the key press as its character."""
+    helix_state = event.app.helix_state
+    operation = helix_state.pending_surround
+    char = event.data
+    buff = event.current_buffer
+
+    if operation == "replace-from":
+        # The first character names the pair to replace; wait for the replacement.
+        helix_state.pending_surround = f"replace-to:{char}"
+        return
+
+    helix_state.pending_surround = None
+    _exit_helix_submodes()
+
+    if operation == "add":
+        _surround_add(event, buff, char)
+    elif operation == "delete":
+        _surround_delete(event, buff, char)
+    elif operation is not None and operation.startswith("replace-to:"):
+        _surround_replace(event, buff, operation.removeprefix("replace-to:"), char)
+
+
+def _surround_pair(char: str) -> tuple[str, str]:
+    """Return the opening and closing characters for a surround key.
+
+    Args:
+        char: The key naming the pair.
+
+    Returns:
+        The opening and closing characters, which are equal for quotes.
+    """
+    if char in BRACKET_PAIRS:
+        return BRACKET_PAIRS[char]
+    return (char, char)
+
+
+def _surround_add(event: KeyPressEvent, buff: Buffer, char: str) -> None:
+    """Wrap the primary selection in a pair of characters.
+
+    Args:
+        event: The triggering key-press event.
+        buff: The buffer to edit.
+        char: The key naming the pair.
+    """
+    opening, closing = _surround_pair(char)
+    anchor, head = get_selections(buff)[0]
+    start, end = (anchor, head) if anchor <= head else (head, anchor)
+    if start == end:
+        event.app.output.bell()
+        return
+
+    buff.save_to_undo_stack()
+    buff.text = (
+        buff.text[:start] + opening + buff.text[start:end] + closing + buff.text[end:]
+    )
+    buff.cursor_position = end + 1
+    set_selections(buff, [(start + 1, end + 1)])
+
+
+def _surround_delete(event: KeyPressEvent, buff: Buffer, char: str) -> None:
+    """Remove the pair of characters surrounding the cursor.
+
+    Args:
+        event: The triggering key-press event.
+        buff: The buffer to edit.
+        char: The key naming the pair.
+    """
+    found = resolve_text_object(buff.text, buff.cursor_position, char, around=True)
+    if found is None:
+        event.app.output.bell()
+        return
+    start, end = found
+
+    buff.save_to_undo_stack()
+    buff.text = buff.text[:start] + buff.text[start + 1 : end - 1] + buff.text[end:]
+    buff.cursor_position = min(buff.cursor_position, len(buff.text))
+    set_selections(buff, [(start, max(start, end - 2))])
+
+
+def _surround_replace(
+    event: KeyPressEvent, buff: Buffer, from_char: str, to_char: str
+) -> None:
+    """Replace the pair of characters surrounding the cursor with another pair.
+
+    Args:
+        event: The triggering key-press event.
+        buff: The buffer to edit.
+        from_char: The key naming the existing pair.
+        to_char: The key naming the replacement pair.
+    """
+    found = resolve_text_object(buff.text, buff.cursor_position, from_char, around=True)
+    if found is None:
+        event.app.output.bell()
+        return
+    start, end = found
+    opening, closing = _surround_pair(to_char)
+
+    buff.save_to_undo_stack()
+    buff.text = (
+        buff.text[:start]
+        + opening
+        + buff.text[start + 1 : end - 1]
+        + closing
+        + buff.text[end:]
+    )
+    buff.cursor_position = min(buff.cursor_position, len(buff.text))
+    set_selections(buff, [(start, end)])
+
+
+# Increment and decrement
+
+
+def _adjust_number(event: KeyPressEvent, delta: int) -> None:
+    """Add to the number at or after the cursor.
+
+    Args:
+        event: The triggering key-press event.
+        delta: The amount to add, which may be negative.
+    """
+    buff = event.current_buffer
+    text = buff.text
+    cursor = buff.cursor_position
+
+    # Expand outwards from the cursor over digits, then look forwards on the line.
+    start = cursor
+    while start > 0 and text[start - 1].isdigit():
+        start -= 1
+    end = start
+    while end < len(text) and text[end].isdigit():
+        end += 1
+
+    if start == end:
+        match = re.compile(r"-?\d+").search(text, cursor)
+        if match is None or "\n" in text[cursor : match.start()]:
+            event.app.output.bell()
+            return
+        start, end = match.span()
+    elif start > 0 and text[start - 1] == "-":
+        start -= 1
+
+    value = int(text[start:end]) + delta * event.arg
+    replacement = str(value)
+
+    buff.save_to_undo_stack()
+    buff.text = text[:start] + replacement + text[end:]
+    buff.cursor_position = start + len(replacement) - 1
+
+
+@add_cmd(
+    keys=["c-a"],
+    filter=helix_normal_mode | helix_select_mode,
+    hidden=True,
+    name="helix-increment",
+)
+def helix_increment(event: KeyPressEvent) -> None:
+    """Increment the number at or after the cursor."""
+    _adjust_number(event, 1)
+
+
+@add_cmd(
+    keys=["c-x"],
+    filter=helix_normal_mode | helix_select_mode,
+    hidden=True,
+    name="helix-decrement",
+)
+def helix_decrement(event: KeyPressEvent) -> None:
+    """Decrement the number at or after the cursor."""
+    _adjust_number(event, -1)
+
+
 # View mode
 
 
@@ -1415,6 +1882,59 @@ def helix_exit_view_mode(event: KeyPressEvent) -> None:
     _exit_helix_submodes()
 
 
+# Space and window sub-modes
+#
+# Only the mode transitions live here. The actions reached through these modes -
+# file and buffer pickers, window splitting - are application concerns, so
+# applications register their own ``helix-space-*`` and ``helix-window-*``
+# commands under the ``helix_space_mode`` and ``helix_window_mode`` filters.
+# Those are picked up automatically by ``load_helix_bindings``.
+
+
+@add_cmd(
+    keys=["space"],
+    filter=helix_normal_mode & ~helix_space_mode,
+    hidden=True,
+    name="helix-enter-space-mode",
+)
+def helix_enter_space_mode(event: KeyPressEvent) -> None:
+    """Enter the space sub-mode, from which pickers and actions are reached."""
+    event.app.helix_state.space_mode = True
+
+
+@add_cmd(
+    keys=["escape"],
+    filter=helix_space_mode,
+    hidden=True,
+    name="helix-exit-space-mode",
+)
+def helix_exit_space_mode(event: KeyPressEvent) -> None:
+    """Leave the space sub-mode."""
+    _exit_helix_submodes()
+
+
+@add_cmd(
+    keys=["c-w"],
+    filter=(helix_normal_mode | helix_select_mode) & ~helix_window_mode,
+    hidden=True,
+    name="helix-enter-window-mode",
+)
+def helix_enter_window_mode(event: KeyPressEvent) -> None:
+    """Enter the window sub-mode, from which window actions are reached."""
+    event.app.helix_state.window_mode = True
+
+
+@add_cmd(
+    keys=["escape"],
+    filter=helix_window_mode,
+    hidden=True,
+    name="helix-exit-window-mode",
+)
+def helix_exit_window_mode(event: KeyPressEvent) -> None:
+    """Leave the window sub-mode."""
+    _exit_helix_submodes()
+
+
 # Search
 
 
@@ -1477,8 +1997,20 @@ def helix_search_prev(event: KeyPressEvent) -> None:
     name="helix-accept-search",
 )
 def helix_accept_search(event: KeyPressEvent) -> None:
-    """Accept the search input."""
-    from apptk.search import accept_global_search
+    """Accept the search input, or apply a pending regex operation."""
+    from apptk.search import accept_global_search, stop_global_search
+
+    helix_state = event.app.helix_state
+    if helix_state.pending_regex_op is not None:
+        # ``s`` and ``S`` borrow the search prompt, so intercept the accept and
+        # apply the selection operation rather than performing a search.
+        pattern = event.current_buffer.text
+        layout = event.app.layout
+        target = layout.search_target_buffer_control
+        stop_global_search()
+        if target is not None:
+            apply_pending_regex(target.buffer, pattern)
+        return
 
     accept_global_search()
 
@@ -1490,9 +2022,12 @@ def helix_accept_search(event: KeyPressEvent) -> None:
     name="helix-stop-search",
 )
 def helix_stop_search(event: KeyPressEvent) -> None:
-    """Abort the search."""
+    """Abort the search, discarding any pending regex operation."""
     from apptk.search import stop_global_search
 
+    helix_state = event.app.helix_state
+    helix_state.pending_regex_op = None
+    helix_state.pending_regex_ranges = []
     stop_global_search()
 
 
@@ -1667,29 +2202,79 @@ def helix_repeat_last_motion(event: KeyPressEvent) -> None:
             buff.cursor_position += pos
 
 
-@add_cmd(
-    keys=[","],
-    filter=helix_select_mode,
-    hidden=True,
-    name="helix-keep-primary-selection",
-)
-def helix_keep_primary_selection(event: KeyPressEvent) -> None:
-    """Keep only the primary selection."""
-    # In single-cursor mode, this is essentially a no-op
-    # Multi-cursor support would need additional implementation
+def _copy_selection_to_adjacent_line(event: KeyPressEvent, *, below: bool) -> None:
+    """Add a copy of the primary selection on the line above or below.
+
+    Args:
+        event: The triggering key-press event.
+        below: Copy downwards when True, upwards otherwise.
+    """
+    buff = event.current_buffer
+    helix_state = event.app.helix_state
+    ranges = get_selections(buff)
+    index = min(helix_state.primary_index, len(ranges) - 1)
+
+    copied = copy_range_to_line(buff.text, ranges[index], below=below)
+    if copied is None:
+        event.app.output.bell()
+        return
+
+    new_ranges = [*ranges, copied]
+    new_ranges.sort(key=lambda text_range: min(text_range))
+    set_selections(buff, new_ranges, primary=new_ranges.index(copied))
 
 
-@add_cmd(
-    keys=["A-,"],
-    filter=helix_select_mode,
-    hidden=True,
-    name="helix-remove-primary-selection",
-)
-def helix_remove_primary_selection(event: KeyPressEvent) -> None:
-    """Remove the primary selection."""
-    # In single-cursor mode, this exits selection
-    event.app.helix_state.select_mode = False
-    event.current_buffer.exit_selection()
+def _start_regex_prompt(event: KeyPressEvent, operation: str) -> None:
+    """Prompt for a regular expression to apply to the current selections.
+
+    Reuses the search buffer rather than introducing a second prompt widget, so
+    that focus handling stays in one place. The pending operation is recorded on
+    the Helix state and applied when the prompt is accepted.
+
+    Args:
+        event: The triggering key-press event.
+        operation: Either ``"select"`` or ``"split"``.
+    """
+    from apptk.search import SearchDirection, start_global_search
+
+    helix_state = event.app.helix_state
+    helix_state.pending_regex_op = operation
+    helix_state.pending_regex_ranges = get_selections(event.current_buffer)
+    start_global_search(direction=SearchDirection.FORWARD)
+
+
+def apply_pending_regex(buff: Buffer, pattern: str) -> bool:
+    """Apply a pending regex operation to the recorded selections.
+
+    Args:
+        buff: The buffer the operation applies to.
+        pattern: The regular expression entered at the prompt.
+
+    Returns:
+        True if a pending operation was applied, False if there was none or the
+        pattern was invalid.
+    """
+    helix_state = get_app().helix_state
+    operation = helix_state.pending_regex_op
+    if operation is None:
+        return False
+
+    ranges = helix_state.pending_regex_ranges or [(0, len(buff.text))]
+    helix_state.pending_regex_op = None
+    helix_state.pending_regex_ranges = []
+
+    try:
+        if operation == "select":
+            new_ranges = select_regex_within(buff.text, ranges, pattern)
+        else:
+            new_ranges = split_on_regex(buff.text, ranges, pattern)
+    except re.error:
+        get_app().output.bell()
+        return False
+
+    if new_ranges:
+        set_selections(buff, new_ranges)
+    return True
 
 
 @add_cmd(
@@ -1699,10 +2284,8 @@ def helix_remove_primary_selection(event: KeyPressEvent) -> None:
     name="helix-select-regex",
 )
 def helix_select_regex(event: KeyPressEvent) -> None:
-    """Select all regex matches inside selections."""
-    # This would need integration with a regex prompt
-    # For now, just bell to indicate not implemented
-    event.app.output.bell()
+    """Select every regular-expression match inside the current selections."""
+    _start_regex_prompt(event, "select")
 
 
 @add_cmd(
@@ -1712,10 +2295,44 @@ def helix_select_regex(event: KeyPressEvent) -> None:
     name="helix-split-selection",
 )
 def helix_split_selection(event: KeyPressEvent) -> None:
-    """Split selection into sub selections on regex matches."""
-    # This would need integration with a regex prompt
-    # For now, just bell to indicate not implemented
-    event.app.output.bell()
+    """Split the current selections on regular-expression matches."""
+    _start_regex_prompt(event, "split")
+
+
+@add_cmd(
+    keys=[","],
+    filter=helix_select_mode,
+    hidden=True,
+    name="helix-keep-primary-selection",
+)
+def helix_keep_primary_selection(event: KeyPressEvent) -> None:
+    """Keep only the primary selection."""
+    buff = event.current_buffer
+    helix_state = event.app.helix_state
+    ranges = collapse_to_primary(get_selections(buff), helix_state.primary_index)
+    set_selections(buff, ranges)
+
+
+@add_cmd(
+    keys=["A-,"],
+    filter=helix_select_mode,
+    hidden=True,
+    name="helix-remove-primary-selection",
+)
+def helix_remove_primary_selection(event: KeyPressEvent) -> None:
+    """Remove the primary selection, keeping the others."""
+    buff = event.current_buffer
+    helix_state = event.app.helix_state
+    ranges = get_selections(buff)
+
+    if len(ranges) <= 1:
+        helix_state.select_mode = False
+        set_selections(buff, [])
+        return
+
+    index = min(helix_state.primary_index, len(ranges) - 1)
+    remaining = ranges[:index] + ranges[index + 1 :]
+    set_selections(buff, remaining, primary=min(index, len(remaining) - 1))
 
 
 @add_cmd(
@@ -1725,9 +2342,10 @@ def helix_split_selection(event: KeyPressEvent) -> None:
     name="helix-split-selection-newlines",
 )
 def helix_split_selection_newlines(event: KeyPressEvent) -> None:
-    """Split selection on newlines."""
-    # Multi-cursor support needed for full implementation
-    event.app.output.bell()
+    """Split each selection on newlines, giving one selection per line."""
+    buff = event.current_buffer
+    ranges = split_on_newlines(buff.text, get_selections(buff))
+    set_selections(buff, ranges)
 
 
 @add_cmd(
@@ -1737,9 +2355,31 @@ def helix_split_selection_newlines(event: KeyPressEvent) -> None:
     name="helix-align-selections",
 )
 def helix_align_selections(event: KeyPressEvent) -> None:
-    """Align selections in columns."""
-    # Multi-cursor support needed for full implementation
-    event.app.output.bell()
+    """Align selections into a common column by inserting padding."""
+    buff = event.current_buffer
+    helix_state = event.app.helix_state
+    ranges = get_selections(buff)
+    if len(ranges) < 2:
+        return
+
+    aligned = align_ranges(buff.text, ranges)
+    if aligned == buff.text:
+        return
+
+    # Insert-only edit applied as a single text assignment, so that it lands on
+    # the undo stack as one step rather than one per selection. The ``text``
+    # setter does not push onto the undo stack itself, so do that explicitly.
+    helix_state._applying_multi_edit = True
+    try:
+        cursor = buff.cursor_position
+        buff.save_to_undo_stack()
+        buff.text = aligned
+        buff.cursor_position = min(cursor, len(aligned))
+    finally:
+        helix_state._applying_multi_edit = False
+
+    # Recompute the ranges against the padded text.
+    set_selections(buff, select_regex_within(aligned, [(0, len(aligned))], r"\S+"))
 
 
 @add_cmd(
@@ -1749,9 +2389,11 @@ def helix_align_selections(event: KeyPressEvent) -> None:
     name="helix-trim-selections",
 )
 def helix_trim_selections(event: KeyPressEvent) -> None:
-    """Trim whitespace from selections."""
-    # Would need to modify selection boundaries
-    event.app.output.bell()
+    """Trim leading and trailing whitespace from each selection."""
+    buff = event.current_buffer
+    trimmed = trim_ranges(buff.text, get_selections(buff))
+    if trimmed:
+        set_selections(buff, trimmed)
 
 
 @add_cmd(
@@ -1761,9 +2403,8 @@ def helix_trim_selections(event: KeyPressEvent) -> None:
     name="helix-copy-selection-below",
 )
 def helix_copy_selection_below(event: KeyPressEvent) -> None:
-    """Copy selection onto next line (add cursor below)."""
-    # Multi-cursor support needed for full implementation
-    event.app.output.bell()
+    """Add a further selection on the line below, in the same columns."""
+    _copy_selection_to_adjacent_line(event, below=True)
 
 
 @add_cmd(
@@ -1773,9 +2414,8 @@ def helix_copy_selection_below(event: KeyPressEvent) -> None:
     name="helix-copy-selection-above",
 )
 def helix_copy_selection_above(event: KeyPressEvent) -> None:
-    """Copy selection onto previous line (add cursor above)."""
-    # Multi-cursor support needed for full implementation
-    event.app.output.bell()
+    """Add a further selection on the line above, in the same columns."""
+    _copy_selection_to_adjacent_line(event, below=False)
 
 
 get_cmd("helix-toggle-comments").add_keys(
@@ -1845,9 +2485,22 @@ def helix_replace_single_mode() -> bool:
     return app.helix_state.input_mode == InputMode.REPLACE_SINGLE
 
 
+@Condition
+def helix_replace_continuous_mode() -> bool:
+    """Check if in Helix continuous replace mode, excluding single-character replace.
+
+    ``helix_replace_mode`` covers both ``REPLACE`` and ``REPLACE_SINGLE``. The two
+    ``<any>`` handlers below must stay disjoint, so this narrows to ``REPLACE`` only.
+    """
+    if not helix_mode():
+        return False
+    app = get_app()
+    return app.helix_state.input_mode == InputMode.REPLACE
+
+
 @add_cmd(
     keys=["<any>"],
-    filter=helix_replace_mode & ~is_read_only & buffer_has_focus,
+    filter=helix_replace_continuous_mode & ~is_read_only & buffer_has_focus,
     hidden=True,
     name="helix-replace-insert",
 )
@@ -2085,7 +2738,7 @@ def helix_insert_register(event: KeyPressEvent) -> None:
     """Insert register content."""
     # Wait for next key to determine which register
     # For now, insert from the default clipboard
-    data = event.app.clipboard.get_data()
+    data = fetch_clipboard_data(event)
     event.current_buffer.insert_text(data.text)
 
 
@@ -2122,152 +2775,36 @@ def helix_complete_prev(event: KeyPressEvent) -> None:
         buff.start_completion(select_last=True)
 
 
+HELIX_SEARCH_COMMANDS = (
+    "helix-search-forward",
+    "helix-search-backward",
+    "helix-search-next",
+    "helix-search-prev",
+    "helix-search-selection",
+    "helix-accept-search",
+    "helix-stop-search",
+)
+
+
 def load_helix_bindings() -> KeyBindingsBase:
     """Load Helix key bindings.
+
+    Every command named ``helix-*`` in the command registry is bound, so that
+    adding a command with an ``@add_cmd`` decorator is sufficient to bind it -
+    there is no separate list to keep in step.
 
     Returns:
         A KeyBindings object with Helix-style bindings.
     """
     kb = KeyBindings()
 
-    # Bind all helix commands
-    helix_commands = [
-        "helix-normal-mode",
-        "helix-insert-mode",
-        "helix-append-mode",
-        "helix-insert-line-start",
-        "helix-insert-line-end",
-        "helix-open-below",
-        "helix-open-above",
-        "helix-move-left",
-        "helix-move-right",
-        "helix-move-down",
-        "helix-move-up",
-        "helix-select-next-word-start",
-        "helix-select-next-long-word-start",
-        "helix-select-prev-word-start",
-        "helix-select-prev-long-word-start",
-        "helix-select-next-word-end",
-        "helix-select-next-long-word-end",
-        "helix-extend-line-below",
-        "helix-extend-to-line-bounds",
-        "helix-find-char",
-        "helix-find-char-backward",
-        "helix-find-till-char",
-        "helix-find-till-char-backward",
-        "helix-select-mode",
-        "helix-exit-select-mode",
-        "helix-delete-selection",
-        "helix-delete-char",
-        "helix-change-selection",
-        "helix-change-char",
-        "helix-replace-char",
-        "helix-replace-with-yanked",
-        "helix-switch-case",
-        "helix-to-lowercase",
-        "helix-to-uppercase",
-        "helix-yank",
-        "helix-yank-line",
-        "helix-paste-after",
-        "helix-paste-before",
-        "helix-undo",
-        "helix-redo",
-        "helix-indent",
-        "helix-unindent",
-        "helix-collapse-selection",
-        "helix-flip-selection",
-        "helix-select-all",
-        "helix-join-lines",
-        "helix-enter-goto-mode",
-        "helix-goto-file-start",
-        "helix-goto-file-end",
-        "helix-goto-line-start",
-        "helix-goto-line-end",
-        "helix-goto-first-nonwhitespace",
-        "helix-goto-window-top",
-        "helix-goto-window-center",
-        "helix-goto-window-bottom",
-        "helix-exit-goto-mode",
-        "helix-enter-match-mode",
-        "helix-goto-matching-bracket",
-        "helix-exit-match-mode",
-        "helix-enter-view-mode",
-        "helix-view-center",
-        "helix-view-top",
-        "helix-view-bottom",
-        "helix-scroll-down",
-        "helix-scroll-up",
-        "helix-page-down",
-        "helix-page-up",
-        "helix-half-page-up",
-        "helix-half-page-down",
-        "helix-exit-view-mode",
-        "helix-search-forward",
-        "helix-search-backward",
-        "helix-search-next",
-        "helix-search-prev",
-        "helix-search-selection",
-        "helix-accept-search",
-        "helix-stop-search",
-        "helix-arg-0",
-        "helix-self-insert",
-        "helix-replace-insert",
-        "helix-replace-single-char",
-        "helix-newline",
-        "helix-accept-line",
-        "helix-delete-backward",
-        "helix-delete-forward",
-        "helix-delete-word-backward",
-        "helix-delete-word-forward",
-        "helix-kill-to-line-start",
-        "helix-kill-to-line-end",
-        "helix-insert-left",
-        "helix-insert-right",
-        "helix-insert-up",
-        "helix-insert-down",
-        "helix-insert-home",
-        "helix-insert-end",
-        "helix-complete-next",
-        "helix-complete-prev",
-        "helix-unbound-key",
-        "helix-handle-find-char",
-        "helix-home",
-        "helix-end",
-        "helix-goto-line",
-        "helix-goto-column",
-        "helix-repeat-last-motion",
-        "helix-keep-primary-selection",
-        "helix-jump-forward",
-        "helix-jump-backward",
-        "helix-commit-undo",
-        "helix-remove-primary-selection",
-        "helix-select-regex",
-        "helix-split-selection",
-        "helix-split-selection-newlines",
-        "helix-align-selections",
-        "helix-trim-selections",
-        "helix-copy-selection-below",
-        "helix-copy-selection-above",
-        "helix-delete-selection-noyank",
-        "helix-delete-char-noyank",
-        "helix-change-selection-noyank",
-        "helix-change-char-noyank",
-        "helix-autocomplete",
-        "helix-insert-register",
-        "helix-toggle-comments",
-        "helix-add-newline-below",
-        "helix-add-newline-above",
-    ]
-
-    # Add numeric argument commands
-    for n in "123456789":
-        helix_commands.append(f"helix-arg-{n}")
-
-    for name in helix_commands:
-        try:
-            get_cmd(name).bind(kb)
-        except KeyError:
-            log.warning("Command %s not found", name)
+    # ``COMMANDS`` maps aliases to the same ``Command`` object, so bind by object
+    # identity to avoid binding an aliased command more than once.
+    seen: set[int] = set()
+    for name, cmd in COMMANDS.items():
+        if name.startswith("helix-") and id(cmd) not in seen:
+            seen.add(id(cmd))
+            cmd.bind(kb)
 
     return ConditionalKeyBindings(kb, helix_mode)
 
@@ -2275,21 +2812,13 @@ def load_helix_bindings() -> KeyBindingsBase:
 def load_helix_search_bindings() -> KeyBindingsBase:
     """Load Helix search key bindings.
 
+    This is deliberately an explicit subset rather than a registry scan: only the
+    search commands are wanted here, not every ``helix-*`` command.
+
     Returns:
         A KeyBindings object with Helix search bindings.
     """
     kb = KeyBindings()
-    for name in (
-        "helix-search-forward",
-        "helix-search-backward",
-        "helix-search-next",
-        "helix-search-prev",
-        "helix-search-selection",
-        "helix-accept-search",
-        "helix-stop-search",
-    ):
-        try:
-            get_cmd(name).bind(kb)
-        except KeyError:
-            log.warning("Command %s not found", name)
+    for name in HELIX_SEARCH_COMMANDS:
+        get_cmd(name).bind(kb)
     return ConditionalKeyBindings(kb, helix_mode)

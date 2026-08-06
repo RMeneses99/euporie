@@ -15,6 +15,8 @@ from prompt_toolkit.key_binding.key_processor import KeyProcessor as PtKeyProces
 if TYPE_CHECKING:
     from typing import Any
 
+    from prompt_toolkit.key_binding.key_bindings import Binding
+
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +33,41 @@ class KeyProcessor(PtKeyProcessor):
         """Create a new KeyProcessor instance."""
         super().__init__(*args, **kwargs)
         self._last_key_press: KeyPress | None = None
+
+    def _call_handler(self, handler: Binding, key_sequence: list[KeyPress]) -> None:
+        """Call a key-binding handler, recording into a Helix macro if active.
+
+        Upstream records macro key presses onto ``app.vi_state``. Helix keeps its
+        own state object, so the key sequence is additionally recorded there when
+        a Helix macro is being captured.
+
+        Args:
+            handler: The key binding to invoke.
+            key_sequence: The key presses which triggered it.
+        """
+        from apptk.enums import EditingMode
+
+        app = get_app()
+        helix_state = getattr(app, "helix_state", None)
+        recording_helix = (
+            app.editing_mode == EditingMode.HELIX
+            and helix_state is not None
+            and bool(helix_state.recording_register)
+        )
+
+        super()._call_handler(handler, key_sequence)
+
+        # Record only if the macro was being captured both before and after the
+        # handler ran, so that the keys which start and stop recording are
+        # themselves excluded.
+        if (
+            recording_helix
+            and handler.record_in_macro()
+            and helix_state is not None
+            and helix_state.recording_register
+        ):
+            for key_press in key_sequence:
+                helix_state.current_recording += key_press.data
 
     def _start_timeout(self) -> None:
         """Start auto flush timeout. Similar to Vim's `timeoutlen` option.

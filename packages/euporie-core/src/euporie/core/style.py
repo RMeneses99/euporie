@@ -592,6 +592,13 @@ def input_widget_styles(
         "text-area focused": "noreverse",
         "text-area selected": "noreverse",
         "text-area focused selected": "reverse",
+        # Secondary Helix selections. The primary selection uses ``reverse``, so
+        # these use an explicit background instead in order to stay distinguishable
+        # from it.
+        "selected.secondary": f"noreverse bg:{cp.bg.more(0.2)}",
+        "text-area selected.secondary": f"noreverse bg:{cp.bg.more(0.2)}",
+        "text-area focused selected.secondary": f"noreverse bg:{cp.bg.more(0.3)}",
+        "multiple-cursors": f"fg:{cp.bg} bg:{cp.fg}",
         # Buttons
         "input button face": f"fg:default bg:{cp.bg.more(0.05)}",
         "input button face hovered": f"fg:{cp.fg} bg:{cp.bg.more(0.2)}",

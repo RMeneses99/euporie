@@ -56,7 +56,6 @@ from apptk.layout.processors import (
     DisplayMultipleCursors,
     HighlightIncrementalSearchProcessor,
     HighlightMatchingBracketProcessor,
-    HighlightSelectionProcessor,
     PasswordProcessor,
     Processor,
     ShowTrailingWhiteSpaceProcessor,
@@ -69,7 +68,11 @@ from apptk.widgets.toolbars import SearchToolbar
 from pygments.lexers import ClassNotFound, get_lexer_by_name
 
 from euporie.core.diagnostics import Report
-from euporie.core.processors import DiagnosticProcessor
+from euporie.core.processors import (
+    DiagnosticProcessor,
+    HelixMultipleCursors,
+    HelixSelectionProcessor,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -277,8 +280,11 @@ class KernelInput(TextArea):
                     filter=is_searching,
                 ),
                 # HighlightSearchProcessor(),
-                HighlightSelectionProcessor(),
+                # Subclasses ``HighlightSelectionProcessor``, falling through to it
+                # unless several Helix selections are active.
+                HelixSelectionProcessor(),
                 DisplayMultipleCursors(),
+                HelixMultipleCursors(),
                 ConditionalProcessor(  # type: ignore
                     HighlightMatchingBracketProcessor(),
                     has_focus(self.buffer) & ~is_done,

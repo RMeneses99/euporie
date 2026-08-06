@@ -55,6 +55,7 @@ from apptk.widgets.base import Shadow
 from euporie.core import settings as core_settings
 from euporie.core.app.base import ConfigurableApp
 from euporie.core.app.cursor import CursorConfig
+from euporie.core.helix_bindings import register_helix_app_bindings
 from euporie.core.languages import KNOWN_FORMATTERS, KNOWN_LANGUAGES, KNOWN_LSP_SERVERS
 from euporie.core.log import setup_logs
 from euporie.core.style import (
@@ -218,6 +219,11 @@ class BaseApp(ConfigurableApp, Application, ABC):
 
         """
         self.color_palette = ColorPalette()
+
+        # Attach application commands to the Helix space and window sub-modes.
+        # This runs before the configuration is applied, so that user key-binding
+        # overrides can still modify or remove these bindings.
+        register_helix_app_bindings()
 
         # Apply key binding configuration before Application.__init__ triggers
         # lazy loading of editing-mode bindings (e.g. load_helix_bindings),

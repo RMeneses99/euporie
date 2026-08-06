@@ -13,8 +13,11 @@ class ViState(PtkViState):
     def __init__(self) -> "None":
         """Set initial mode to navigation."""
         super().__init__()
-        #: The Vi mode we're currently in to.
-        self.__input_mode = InputMode.NAVIGATION
+        # Assign through the property rather than the name-mangled attribute. The
+        # upstream class is also called ``ViState``, so ``self.__input_mode`` here
+        # happens to mangle to the same ``_ViState__input_mode`` the base property
+        # reads - but only by coincidence of the shared class name.
+        self.input_mode = InputMode.NAVIGATION
 
     def reset(self) -> "None":
         """Reset state, go back to the given mode. NAVIGATION by default."""

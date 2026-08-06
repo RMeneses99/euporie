@@ -207,7 +207,10 @@ docstring-code-format = true
 
 
 [tool.codespell]
-skip = "packages/euporie-core/src/euporie/core/languages.py"
+# Globbed rather than given as plain paths: `codespell .` yields `./packages/...`
+# while pre-commit passes `packages/...`, and only a glob matches both.
+# `languages.py` is generated language metadata; `docs/_inc/` is built by the docs.
+skip = "*/euporie/core/languages.py,*/docs/_inc/*,./docs/_inc"
 ignore-words-list = "adn,als,controle,controll,abd,edn,iterm"
 
 [tool.typos.default.extend-words]

@@ -8,6 +8,74 @@ Editing Modes
 
 The key-bindings used when editing a cell or in the console are determined by the :confval:`edit_mode` configuration variable. This can be set to ``micro``, ``emacs``, ``vi`` or ``helix`` to use key-bindings in the style of the respective text editor.
 
+**********
+Helix Mode
+**********
+
+Helix mode is modal, like Vi, but inverts the order in which commands are given. Where Vi is *verb-then-object* - ``dw`` to delete a word - Helix is **select-then-act**: ``w`` selects the next word and ``d`` then deletes whatever is selected. Because the selection is always visible before the operation runs, the effect of a command can be seen before committing to it.
+
+Modes
+=====
+
+``i`` enters insert mode and :kbd:`Escape` returns to normal mode. ``v`` enters select mode, in which motions extend the selection rather than replacing it.
+
+Four sub-modes are entered with a prefix key and left with :kbd:`Escape`:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Key
+     - Sub-mode
+   * - ``g``
+     - **Goto** - jump to the start or end of the buffer, a line, or the top, middle or bottom of the window
+   * - ``m``
+     - **Match** - matching brackets, text objects, and surround operations
+   * - ``z``
+     - **View** - scroll the viewport without moving the cursor
+   * - :kbd:`Space`
+     - **Space** - open files, save, change kernel, and show the command palette
+   * - :kbd:`Ctrl+w`
+     - **Window** - tile, stack, focus and close tabs
+
+Multiple selections
+===================
+
+Several ranges of text can be selected at once, and every subsequent command acts on all of them. The primary selection is highlighted differently from the others.
+
+* ``x`` selects the current line; pressing it again extends to the next.
+* ``Alt+s`` splits the selection into one selection per line.
+* ``s`` selects every match of a regular expression inside the current selections, and ``S`` splits the selections on matches.
+* ``C`` and ``Alt+C`` add a further selection on the line below or above.
+* ``,`` reduces the selections back to the primary one, and ``Alt+,`` removes the primary selection.
+* ``_`` trims surrounding whitespace from each selection, and ``&`` aligns them into a common column.
+
+Editing commands - ``d``, ``c``, ``y``, ``p``, ``~`` and the case commands - apply to every selection. Such an edit is applied as a single change, so one press of ``u`` undoes it everywhere at once. Yanking several selections joins them with newlines, and pasting a clipboard which holds one line per selection distributes a line to each.
+
+Text objects and surround
+=========================
+
+Within match mode, ``mi`` selects *inside* a text object and ``ma`` selects *around* it. The object is named by the following key: ``w`` for a word, ``W`` for a WORD, ``p`` for a paragraph, a quote character, or a bracket - ``(``, ``[``, ``{`` or ``<``, with ``b``, ``r``, ``c`` and ``a`` as aliases. Nested brackets resolve to the innermost enclosing pair of the requested type.
+
+Also within match mode, ``ms`` surrounds the selection with a pair of characters, ``md`` removes the surrounding pair, and ``mr`` replaces one pair with another.
+
+Registers and macros
+====================
+
+``"`` followed by a letter or digit selects a register for the next yank, paste or delete; without one, the system clipboard is used.
+
+``q`` starts recording a macro and a second ``q`` stops it, storing the recording in the selected register or in ``@`` by default. ``Q`` replays it.
+
+Other commands
+==============
+
+``Ctrl+a`` and ``Ctrl+x`` increment and decrement the number at or after the cursor, including negative numbers.
+
+Differences from upstream Helix
+===============================
+
+Helix's language-server-backed pickers and workspace navigation have no equivalent in euporie, so the space sub-mode is bound to euporie's own file, kernel and command-palette actions instead. Window commands operate on euporie's tabs rather than on editor splits.
+
 *******************
 Custom Key Bindings
 *******************
@@ -21,7 +89,7 @@ Using the simple list form will entirely over-ride the default bindings for a co
 Below is an example :ref:`pages/configuration:Configuration File` showing how the key-bindings can be set:
 
 .. code-block:: toml
-   :emphasize-lines: 5-9
+   :emphasize-lines: 5-7
 
    [notebook]
    autoformat = false
