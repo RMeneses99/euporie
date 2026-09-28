@@ -8,9 +8,8 @@ refactor cannot quietly drift towards the Helix meaning.
 from __future__ import annotations
 
 import pytest
-from kakoune_utils import run_kakoune, selection_ranges
-
 from apptk.key_binding.kakoune_state import InputMode
+from kakoune_utils import run_kakoune, selection_ranges
 
 
 def _anchor_head(buffer: object) -> tuple[int | None, int]:

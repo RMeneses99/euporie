@@ -9,16 +9,15 @@ These tests pin the working behaviour so that regression is caught.
 from __future__ import annotations
 
 import pytest
-from kakoune_utils import make_event, run_kakoune, selection_ranges
-
 from apptk.application.current import set_app
 from apptk.commands import get_cmd
 from apptk.key_binding.kakoune_state import InputMode
+from kakoune_utils import make_event, run_kakoune
 
 
 def test_insert_places_a_caret_before_every_selection() -> None:
     """``i`` collapses each selection to a caret at its start."""
-    buffer, app = run_kakoune(
+    _buffer, app = run_kakoune(
         "aaa bbb ccc", "kakoune-insert", selections=[(0, 3), (4, 7), (8, 11)]
     )
     assert app.kakoune_state.input_mode == InputMode.INSERT
@@ -27,7 +26,7 @@ def test_insert_places_a_caret_before_every_selection() -> None:
 
 def test_append_places_a_caret_after_every_selection() -> None:
     """``a`` collapses each selection to a caret at its end."""
-    buffer, app = run_kakoune(
+    _buffer, app = run_kakoune(
         "aaa bbb ccc", "kakoune-append", selections=[(0, 3), (4, 7), (8, 11)]
     )
     assert app.kakoune_state.selections == [(3, 3), (7, 7), (11, 11)]
@@ -115,7 +114,7 @@ def test_single_selection_falls_through_to_buffer_methods() -> None:
 
 def test_insert_records_text_for_repeat() -> None:
     """Insert-mode text is captured so that ``.`` can repeat the change."""
-    buffer, app = run_kakoune("hello", "kakoune-insert", cursor=0)
+    _buffer, app = run_kakoune("hello", "kakoune-insert", cursor=0)
     with set_app(app):
         for char in "hi":
             get_cmd("kakoune-self-insert").handler(make_event(app, data=char))

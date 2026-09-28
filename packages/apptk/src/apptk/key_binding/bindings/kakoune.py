@@ -34,9 +34,8 @@ import re
 from typing import TYPE_CHECKING
 
 from apptk.application.current import get_app
-from apptk.buffer import indent, unindent
 from apptk.clipboard import ClipboardData
-from apptk.commands import COMMANDS, add_cmd, get_cmd
+from apptk.commands import add_cmd
 from apptk.filters import (
     Condition,
     buffer_has_focus,
@@ -45,14 +44,10 @@ from apptk.filters import (
 )
 from apptk.filters.app import is_multiline, is_searching
 from apptk.filters.modes import (
-    kakoune_goto_mode,
     kakoune_insert_mode,
     kakoune_mode,
     kakoune_normal_mode,
-    kakoune_user_mode,
-    kakoune_view_mode,
 )
-from apptk.key_binding import ConditionalKeyBindings, KeyBindings
 from apptk.key_binding.bindings.kakoune_selections import (
     align_ranges,
     apply_edit_at_ranges,
@@ -65,38 +60,28 @@ from apptk.key_binding.bindings.kakoune_selections import (
     first_and_last_chars,
     force_forward,
     get_selections,
-    intersection,
     keep_matching,
-    leftmost,
-    longest,
     merge_contiguous,
     merge_overlapping,
     normalise,
-    rightmost,
     rotate_contents,
     rotate_primary,
     select_regex_within,
     set_selections,
-    shortest,
     split_on_newlines,
     split_on_regex,
     text_at_ranges,
     trim_ranges,
     trim_to_full_lines,
-    union,
 )
-from apptk.key_binding.bindings.kakoune_textobjects import resolve_text_object
-from apptk.key_binding.kakoune_state import InputMode, KakouneMode
-from apptk.key_binding.key_processor import KeyPress
-from apptk.selection import SelectionType
+from apptk.key_binding.kakoune_state import InputMode
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from apptk.buffer import Buffer
-    from apptk.key_binding.key_bindings import KeyBindingsBase
-    from apptk.key_binding.key_processor import KeyPressEvent
     from apptk.key_binding.kakoune_state import KakouneState
+    from apptk.key_binding.key_processor import KeyPressEvent
 
 __all__ = [
     "load_kakoune_bindings",
@@ -1079,3 +1064,841 @@ def kakoune_flip_selections(event: KeyPressEvent) -> None:
 def kakoune_forward_selections(event: KeyPressEvent) -> None:
     """Ensure every selection runs forwards, with the cursor after the anchor."""
     _apply(event, force_forward(_selections(event)))
+
+
+# Changes
+#
+# Every command here acts on all selections. Because selections are never empty,
+# there is no no-selection variant to write: ``d`` on a bare cursor deletes the
+# character under it because that character *is* the selection.
+
+
+def _yank(event: KeyPressEvent, ranges: list[tuple[int, int]]) -> None:
+    """Store the text of the given ranges in the pending register.
+
+    Several selections are joined with newlines, so that pasting distributes one
+    line to each.
+
+    Args:
+        event: The key press being handled.
+        ranges: The ranges whose text should be stored.
+    """
+    pieces = text_at_ranges(event.current_buffer.text, ranges)
+    store_clipboard_data(event, ClipboardData("\n".join(pieces)))
+
+
+def _delete(event: KeyPressEvent, *, yank: bool, change: bool) -> None:
+    """Delete every selection, optionally yanking first or entering insert mode.
+
+    Args:
+        event: The key press being handled.
+        yank: Store the deleted text before removing it.
+        change: Enter insert mode afterwards, leaving carets behind.
+    """
+    buff = event.current_buffer
+    ranges = _selections(event)
+    if yank:
+        _yank(event, ranges)
+
+    new_ranges = apply_edit_at_ranges(buff, ranges, [""])
+    state = _state(event)
+
+    if change:
+        state.input_mode = InputMode.INSERT
+        state.last_insert = ""
+        state.recording_insert = True
+        carets = [(start, start) for start, _ in new_ranges]
+        if len(carets) > 1:
+            state.selections = carets
+            buff.multiple_cursor_positions = [s for s, _ in carets]
+            buff.cursor_position = carets[0][0]
+        else:
+            state.clear_selections()
+            buff.exit_selection()
+            buff.cursor_position = carets[0][0]
+        return
+
+    # Leave a selection on whatever now sits where the text was.
+    text = buff.text
+    kept: list[tuple[int, int]] = []
+    for start, _ in new_ranges:
+        kept.append(
+            (start, start + 1) if start < len(text) else (max(start - 1, 0), start)
+        )
+    if kept:
+        set_selections(buff, kept, primary=min(state.primary_index, len(kept) - 1))
+
+
+@add_cmd(
+    keys=["d"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-delete",
+)
+def kakoune_delete(event: KeyPressEvent) -> None:
+    """Yank and delete every selection."""
+    _delete(event, yank=True, change=False)
+
+
+@add_cmd(
+    keys=["A-d"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-delete-noyank",
+)
+def kakoune_delete_noyank(event: KeyPressEvent) -> None:
+    """Delete every selection without yanking."""
+    _delete(event, yank=False, change=False)
+
+
+@add_cmd(
+    keys=["c"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-change",
+)
+def kakoune_change(event: KeyPressEvent) -> None:
+    """Yank and delete every selection, then enter insert mode."""
+    _delete(event, yank=True, change=True)
+
+
+@add_cmd(
+    keys=["A-c"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-change-noyank",
+)
+def kakoune_change_noyank(event: KeyPressEvent) -> None:
+    """Delete every selection without yanking, then enter insert mode."""
+    _delete(event, yank=False, change=True)
+
+
+@add_cmd(
+    keys=["y"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-yank",
+)
+def kakoune_yank(event: KeyPressEvent) -> None:
+    """Yank every selection."""
+    _yank(event, _selections(event))
+
+
+def _paste(event: KeyPressEvent, *, after: bool, select: bool) -> None:
+    """Paste the register's contents at every selection.
+
+    Args:
+        event: The key press being handled.
+        after: Paste after each selection rather than before it.
+        select: Leave the pasted text selected.
+    """
+    buff = event.current_buffer
+    data = fetch_clipboard_data(event)
+    if not data.text:
+        event.app.output.bell()
+        return
+
+    ranges = _selections(event)
+    lines = data.text.split("\n")
+    # One line per selection distributes them; otherwise every selection gets the
+    # whole payload, which is what Kakoune does for a single-line register.
+    payloads = lines if len(lines) == len(ranges) and len(ranges) > 1 else [data.text]
+
+    targets = [
+        (max(a, h), max(a, h)) if after else (min(a, h), min(a, h)) for a, h in ranges
+    ]
+    new_ranges = apply_edit_at_ranges(buff, targets, payloads)
+
+    if select:
+        set_selections(buff, new_ranges)
+    else:
+        # Leave the cursor on the last character of each pasted run.
+        text = buff.text
+        kept = [
+            (max(end - 1, start), end)
+            if end > start
+            else (start, min(start + 1, len(text)))
+            for start, end in new_ranges
+        ]
+        set_selections(buff, kept)
+
+
+@add_cmd(
+    keys=["p"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-paste-after",
+)
+def kakoune_paste_after(event: KeyPressEvent) -> None:
+    """Paste after the end of each selection."""
+    _paste(event, after=True, select=False)
+
+
+@add_cmd(
+    keys=["P"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-paste-before",
+)
+def kakoune_paste_before(event: KeyPressEvent) -> None:
+    """Paste before the beginning of each selection."""
+    _paste(event, after=False, select=False)
+
+
+@add_cmd(
+    keys=["A-p"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-paste-after-select",
+)
+def kakoune_paste_after_select(event: KeyPressEvent) -> None:
+    """Paste after each selection and select each pasted string."""
+    _paste(event, after=True, select=True)
+
+
+@add_cmd(
+    keys=["A-P"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-paste-before-select",
+)
+def kakoune_paste_before_select(event: KeyPressEvent) -> None:
+    """Paste before each selection and select each pasted string."""
+    _paste(event, after=False, select=True)
+
+
+@add_cmd(
+    keys=["R"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-replace-with-yanked",
+)
+def kakoune_replace_with_yanked(event: KeyPressEvent) -> None:
+    """Replace every selection with the register's contents."""
+    buff = event.current_buffer
+    data = fetch_clipboard_data(event)
+    if not data.text:
+        event.app.output.bell()
+        return
+    ranges = _selections(event)
+    lines = data.text.split("\n")
+    payloads = lines if len(lines) == len(ranges) and len(ranges) > 1 else [data.text]
+    set_selections(buff, apply_edit_at_ranges(buff, ranges, payloads))
+
+
+@add_cmd(
+    keys=["A-R"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-replace-with-every-yanked",
+)
+def kakoune_replace_with_every_yanked(event: KeyPressEvent) -> None:
+    """Replace every selection with the whole register contents."""
+    buff = event.current_buffer
+    data = fetch_clipboard_data(event)
+    if not data.text:
+        event.app.output.bell()
+        return
+    ranges = _selections(event)
+    set_selections(buff, apply_edit_at_ranges(buff, ranges, [data.text]))
+
+
+@Condition
+def waiting_for_replace_char() -> bool:
+    """Check whether ``r`` is awaiting its replacement character."""
+    if not kakoune_mode():
+        return False
+    return get_app().kakoune_state.pending_replace_char
+
+
+@add_cmd(
+    keys=["r"],
+    filter=kakoune_normal_mode & ~waiting_for_replace_char & ~is_read_only,
+    hidden=True,
+    name="kakoune-replace-char",
+)
+def kakoune_replace_char(event: KeyPressEvent) -> None:
+    """Await a character to replace every selected character with."""
+    _state(event).pending_replace_char = True
+
+
+@add_cmd(
+    keys=["<any>"],
+    filter=kakoune_normal_mode & waiting_for_replace_char & ~is_read_only,
+    hidden=True,
+    eager=True,
+    name="kakoune-handle-replace-char",
+)
+def kakoune_handle_replace_char(event: KeyPressEvent) -> None:
+    """Replace every character of every selection with the key pressed."""
+    state = _state(event)
+    state.pending_replace_char = False
+    char = event.data
+    if not char or len(char) != 1 or not char.isprintable():
+        event.app.output.bell()
+        return
+    buff = event.current_buffer
+    ranges = _selections(event)
+    # Each selection keeps its length, so replace character for character.
+    payloads = [char * (end - start) for start, end in (normalise(r) for r in ranges)]
+    set_selections(buff, apply_edit_at_ranges(buff, ranges, payloads))
+
+
+def _transform(event: KeyPressEvent, func: Callable[[str], str]) -> None:
+    """Apply a text transformation to every selection, keeping them selected.
+
+    Args:
+        event: The key press being handled.
+        func: The transformation to apply to each selection's text.
+    """
+    buff = event.current_buffer
+    ranges = _selections(event)
+    payloads = [func(piece) for piece in text_at_ranges(buff.text, ranges)]
+    set_selections(buff, apply_edit_at_ranges(buff, ranges, payloads))
+
+
+@add_cmd(
+    keys=["`"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-to-lowercase",
+)
+def kakoune_to_lowercase(event: KeyPressEvent) -> None:
+    """Convert every selection to lower case."""
+    _transform(event, str.lower)
+
+
+@add_cmd(
+    keys=["~"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-to-uppercase",
+)
+def kakoune_to_uppercase(event: KeyPressEvent) -> None:
+    """Convert every selection to upper case.
+
+    NOTE: Kakoune's ``~`` is upper case. Helix maps ``~`` to swap case and
+    ``<a-`>`` to upper case - exactly the other way round.
+    """
+    _transform(event, str.upper)
+
+
+@add_cmd(
+    keys=["A-`"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-swap-case",
+)
+def kakoune_swap_case(event: KeyPressEvent) -> None:
+    """Swap the case of every selection."""
+    _transform(event, str.swapcase)
+
+
+@add_cmd(
+    keys=[">"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-indent",
+)
+def kakoune_indent(event: KeyPressEvent) -> None:
+    """Indent the lines of every selection."""
+    _indent(event, add=True, include_empty=False)
+
+
+@add_cmd(
+    keys=["A->"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-indent-with-empty",
+)
+def kakoune_indent_with_empty(event: KeyPressEvent) -> None:
+    """Indent the lines of every selection, including empty ones."""
+    _indent(event, add=True, include_empty=True)
+
+
+@add_cmd(
+    keys=["<"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-unindent",
+)
+def kakoune_unindent(event: KeyPressEvent) -> None:
+    """Unindent the lines of every selection."""
+    _indent(event, add=False, include_empty=False)
+
+
+def _indent(event: KeyPressEvent, *, add: bool, include_empty: bool) -> None:
+    """Indent or unindent every line touched by a selection.
+
+    Args:
+        event: The key press being handled.
+        add: Add indentation rather than removing it.
+        include_empty: Indent empty lines too.
+    """
+    buff = event.current_buffer
+    text = buff.text
+    width = 4
+
+    # Collect the distinct lines covered by any selection.
+    starts: set[int] = set()
+    for anchor, head in _selections(event):
+        start, end = normalise((anchor, head))
+        offset = text.rfind("\n", 0, start) + 1
+        while offset < max(end, start + 1):
+            starts.add(offset)
+            newline = text.find("\n", offset)
+            if newline < 0:
+                break
+            offset = newline + 1
+
+    edits: list[tuple[int, int]] = []
+    payloads: list[str] = []
+    for offset in sorted(starts):
+        newline = text.find("\n", offset)
+        line_end = len(text) if newline < 0 else newline
+        line = text[offset:line_end]
+        if add:
+            if not line.strip() and not include_empty:
+                continue
+            edits.append((offset, offset))
+            payloads.append(" " * width)
+        else:
+            existing = len(line) - len(line.lstrip(" "))
+            removed = min(existing, width)
+            if removed == 0:
+                continue
+            edits.append((offset, offset + removed))
+            payloads.append("")
+
+    if not edits:
+        event.app.output.bell()
+        return
+
+    kept = _selections(event)
+    apply_edit_at_ranges(buff, edits, payloads)
+    # Re-derive the selections: the edits shifted every offset after them.
+    shift_total = 0
+    shifted: list[tuple[int, int]] = []
+    for anchor, head in kept:
+        start, end = normalise((anchor, head))
+        before_start = sum(
+            len(p) - (e - s) for (s, e), p in zip(edits, payloads) if s <= start
+        )
+        before_end = sum(
+            len(p) - (e - s) for (s, e), p in zip(edits, payloads) if s < end
+        )
+        shifted.append((start + before_start, end + before_end))
+        shift_total += before_end
+    set_selections(buff, shifted)
+
+
+@add_cmd(
+    keys=["A-j"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-join-lines",
+)
+def kakoune_join_lines(event: KeyPressEvent) -> None:
+    """Join the lines of every selection.
+
+    NOTE: Kakoune joins with ``<a-j>``; Helix uses ``J``, which here extends the
+    selection downwards instead.
+    """
+    buff = event.current_buffer
+    text = buff.text
+    edits: list[tuple[int, int]] = []
+    for anchor, head in _selections(event):
+        start, end = normalise((anchor, head))
+        offset = start
+        while True:
+            newline = text.find("\n", offset, max(end, start + 1))
+            if newline < 0:
+                break
+            # Swallow the newline and the following indentation.
+            stop = newline + 1
+            while stop < len(text) and text[stop] in " \t":
+                stop += 1
+            edits.append((newline, stop))
+            offset = stop
+    if not edits:
+        event.app.output.bell()
+        return
+    apply_edit_at_ranges(buff, edits, [" "])
+
+
+@add_cmd(
+    keys=["u"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    save_before=(lambda event: False),
+    name="kakoune-undo",
+)
+def kakoune_undo(event: KeyPressEvent) -> None:
+    """Undo the last change."""
+    _state(event).clear_selections()
+    event.current_buffer.undo()
+
+
+@add_cmd(
+    keys=["U"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    save_before=(lambda event: False),
+    name="kakoune-redo",
+)
+def kakoune_redo(event: KeyPressEvent) -> None:
+    """Redo the last undone change."""
+    _state(event).clear_selections()
+    event.current_buffer.redo()
+
+
+@add_cmd(
+    keys=["&"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-align-selections",
+)
+def kakoune_align_selections(event: KeyPressEvent) -> None:
+    """Align the start of every selection into a common column."""
+    buff = event.current_buffer
+    new_text = align_ranges(buff.text, _selections(event))
+    if new_text == buff.text:
+        return
+    buff.save_to_undo_stack()
+    _state(event).clear_selections()
+    buff.text = new_text
+
+
+@add_cmd(
+    keys=["A-&"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-copy-indent",
+)
+def kakoune_copy_indent(event: KeyPressEvent) -> None:
+    """Copy the main selection's indentation to every other selection's line."""
+    buff = event.current_buffer
+    state = _state(event)
+    new_text = copy_indent(buff.text, _selections(event), state.primary_index)
+    if new_text == buff.text:
+        return
+    buff.save_to_undo_stack()
+    state.clear_selections()
+    buff.text = new_text
+
+
+@add_cmd(
+    keys=["_"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-trim-selections",
+)
+def kakoune_trim_selections(event: KeyPressEvent) -> None:
+    """Trim surrounding whitespace from every selection."""
+    _apply(event, trim_ranges(event.current_buffer.text, _selections(event)))
+
+
+# Multiple selections
+
+
+@add_cmd(
+    keys=["A-s"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-split-lines",
+)
+def kakoune_split_lines(event: KeyPressEvent) -> None:
+    """Split each selection on line boundaries, one selection per line."""
+    _apply(event, split_on_newlines(event.current_buffer.text, _selections(event)))
+
+
+@add_cmd(
+    keys=["A-S"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-select-ends",
+)
+def kakoune_select_ends(event: KeyPressEvent) -> None:
+    """Reduce each selection to its first and last characters."""
+    _apply(event, first_and_last_chars(_selections(event)))
+
+
+@add_cmd(
+    keys=[","],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-keep-main-selection",
+)
+def kakoune_keep_main_selection(event: KeyPressEvent) -> None:
+    """Discard every selection but the main one."""
+    state = _state(event)
+    _apply(
+        event, collapse_to_primary(_selections(event), state.primary_index), primary=0
+    )
+
+
+@add_cmd(
+    keys=["A-,"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-remove-main-selection",
+)
+def kakoune_remove_main_selection(event: KeyPressEvent) -> None:
+    """Discard the main selection, keeping the rest."""
+    state = _state(event)
+    ranges = _selections(event)
+    if len(ranges) < 2:
+        event.app.output.bell()
+        return
+    index = min(state.primary_index, len(ranges) - 1)
+    remaining = [r for position, r in enumerate(ranges) if position != index]
+    _apply(event, remaining, primary=min(index, len(remaining) - 1))
+
+
+@add_cmd(
+    keys=["A-_"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-merge-contiguous",
+)
+def kakoune_merge_contiguous(event: KeyPressEvent) -> None:
+    """Merge selections which touch or overlap."""
+    _apply(event, merge_contiguous(_selections(event)), primary=0)
+
+
+@add_cmd(
+    keys=["+"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-duplicate-selections",
+)
+def kakoune_duplicate_selections(event: KeyPressEvent) -> None:
+    """Duplicate every selection, producing overlapping ones."""
+    _apply(event, duplicate_ranges(_selections(event)), primary=0)
+
+
+@add_cmd(
+    keys=["A-+"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-merge-overlapping",
+)
+def kakoune_merge_overlapping(event: KeyPressEvent) -> None:
+    """Merge selections which genuinely overlap, leaving touching ones alone."""
+    _apply(event, merge_overlapping(_selections(event)), primary=0)
+
+
+@add_cmd(
+    keys=[")"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-rotate-main-forward",
+)
+def kakoune_rotate_main_forward(event: KeyPressEvent) -> None:
+    """Make the next selection the main one.
+
+    NOTE: Helix ships ``rotate_primary`` but binds no key to it; Kakoune uses
+    ``)`` and ``(``.
+    """
+    state = _state(event)
+    ranges = _selections(event)
+    count = event.arg if has_arg() else 1
+    _apply(event, ranges, primary=rotate_primary(ranges, state.primary_index, count))
+
+
+@add_cmd(
+    keys=["("],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-rotate-main-backward",
+)
+def kakoune_rotate_main_backward(event: KeyPressEvent) -> None:
+    """Make the previous selection the main one."""
+    state = _state(event)
+    ranges = _selections(event)
+    count = event.arg if has_arg() else 1
+    _apply(event, ranges, primary=rotate_primary(ranges, state.primary_index, -count))
+
+
+def _rotate_contents(event: KeyPressEvent, step: int) -> None:
+    """Rotate the text between selections, leaving the selections in place.
+
+    Args:
+        event: The key press being handled.
+        step: How far to rotate, positive to move text forwards.
+    """
+    buff = event.current_buffer
+    ranges = _selections(event)
+    if len(ranges) < 2:
+        event.app.output.bell()
+        return
+    contents = text_at_ranges(buff.text, ranges)
+    rotated = rotate_contents(contents, step)
+    set_selections(buff, apply_edit_at_ranges(buff, ranges, rotated))
+
+
+@add_cmd(
+    keys=["A-)"],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-rotate-contents-forward",
+)
+def kakoune_rotate_contents_forward(event: KeyPressEvent) -> None:
+    """Rotate the selections' contents forwards."""
+    _rotate_contents(event, event.arg if has_arg() else 1)
+
+
+@add_cmd(
+    keys=["A-("],
+    filter=kakoune_normal_mode & ~is_read_only,
+    hidden=True,
+    name="kakoune-rotate-contents-backward",
+)
+def kakoune_rotate_contents_backward(event: KeyPressEvent) -> None:
+    """Rotate the selections' contents backwards."""
+    _rotate_contents(event, -(event.arg if has_arg() else 1))
+
+
+def _copy_to_adjacent_line(event: KeyPressEvent, *, below: bool) -> None:
+    """Add a copy of every selection on the adjacent line.
+
+    Args:
+        event: The key press being handled.
+        below: Copy onto the following line rather than the preceding one.
+    """
+    text = event.current_buffer.text
+    ranges = list(_selections(event))
+    added = [
+        found
+        for text_range in ranges
+        if (found := copy_range_to_line(text, text_range, below=below)) is not None
+    ]
+    if not added:
+        event.app.output.bell()
+        return
+    _apply(event, [*ranges, *added])
+
+
+@add_cmd(
+    keys=["C"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-copy-selection-below",
+)
+def kakoune_copy_selection_below(event: KeyPressEvent) -> None:
+    """Add a selection on the line below each existing one."""
+    _copy_to_adjacent_line(event, below=True)
+
+
+@add_cmd(
+    keys=["A-C"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-copy-selection-above",
+)
+def kakoune_copy_selection_above(event: KeyPressEvent) -> None:
+    """Add a selection on the line above each existing one."""
+    _copy_to_adjacent_line(event, below=False)
+
+
+# Regex-driven selection. These borrow the search prompt rather than introducing a
+# second prompt widget, following the approach ``helix.py`` takes for ``s``/``S``.
+
+
+def _start_regex_prompt(event: KeyPressEvent, operation: str) -> None:
+    """Prompt for a regular expression to apply to the current selections.
+
+    Args:
+        event: The key press being handled.
+        operation: The pending operation - ``"select"``, ``"split"``, ``"keep"``
+            or ``"drop"``.
+    """
+    from apptk.search import SearchDirection, start_global_search
+
+    state = _state(event)
+    state.pending_regex_op = operation
+    state.pending_regex_ranges = _selections(event)
+    start_global_search(direction=SearchDirection.FORWARD)
+
+
+def apply_pending_regex(buffer: Buffer, pattern: str) -> None:
+    """Apply the pending regex operation to a buffer.
+
+    Args:
+        buffer: The buffer the operation applies to.
+        pattern: The regular expression entered at the prompt.
+    """
+    from apptk.key_binding.kakoune_state import get_state as _get_state
+
+    state = _get_state(buffer)
+    operation = state.pending_regex_op
+    ranges = state.pending_regex_ranges
+    state.pending_regex_op = None
+    state.pending_regex_ranges = []
+
+    if operation is None or not ranges:
+        return
+
+    try:
+        if operation == "select":
+            result = select_regex_within(buffer.text, ranges, pattern)
+        elif operation == "split":
+            result = split_on_regex(buffer.text, ranges, pattern)
+        elif operation == "keep":
+            result = keep_matching(buffer.text, ranges, pattern)
+        elif operation == "drop":
+            result = drop_matching(buffer.text, ranges, pattern)
+        else:
+            return
+    except re.error:
+        get_app().output.bell()
+        return
+
+    if result:
+        set_selections(buffer, result)
+    else:
+        get_app().output.bell()
+
+
+@add_cmd(
+    keys=["s"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-select-regex",
+)
+def kakoune_select_regex(event: KeyPressEvent) -> None:
+    """Select every match of a regular expression within the selections."""
+    _start_regex_prompt(event, "select")
+
+
+@add_cmd(
+    keys=["S"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-split-regex",
+)
+def kakoune_split_regex(event: KeyPressEvent) -> None:
+    """Split the selections on every match of a regular expression."""
+    _start_regex_prompt(event, "split")
+
+
+@add_cmd(
+    keys=["A-k"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-keep-matching",
+)
+def kakoune_keep_matching(event: KeyPressEvent) -> None:
+    """Keep only the selections matching a regular expression."""
+    _start_regex_prompt(event, "keep")
+
+
+@add_cmd(
+    keys=["A-K"],
+    filter=kakoune_normal_mode,
+    hidden=True,
+    name="kakoune-drop-matching",
+)
+def kakoune_drop_matching(event: KeyPressEvent) -> None:
+    """Drop the selections matching a regular expression."""
+    _start_regex_prompt(event, "drop")
