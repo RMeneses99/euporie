@@ -155,14 +155,16 @@ def trim_to_full_lines(
             if newline < 0 or newline >= end:
                 continue
             start = newline + 1
-        # Retreat to the end of the last complete line.
-        if end < len(text) and text[end - 1] != "\n":
+        # Retreat to the end of the last complete line. A line counts as complete
+        # only when a newline follows it, so a final line with no trailing newline
+        # is dropped even where the range reaches the end of the buffer.
+        if end > start and text[end - 1] == "\n":
+            end -= 1
+        else:
             newline = text.rfind("\n", start, end)
             if newline < 0:
                 continue
             end = newline
-        elif end > start and text[end - 1] == "\n":
-            end -= 1
         if start < end:
             result.append((start, end))
     return result

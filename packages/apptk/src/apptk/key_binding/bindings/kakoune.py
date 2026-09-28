@@ -819,20 +819,28 @@ def _next_word(text: str, start: int, *, long: bool) -> tuple[int, int] | None:
     Returns:
         The range to select, or None at the end of the buffer.
     """
-    index = start
-    if index >= len(text):
+    if start >= len(text):
         return None
-    # Step over the character under the cursor first.
-    index += 1
-    while index < len(text) and not _is_word_char(text[index], long=long):
-        if text[index] == "\n":
-            break
-        index += 1
-    end = index
-    while end < len(text) and _is_word_char(text[end], long=long):
-        end += 1
+
+    end = start
+    if _is_word_char(text[end], long=long):
+        # On a word already: consume the rest of it, then its trailing whitespace.
+        while end < len(text) and _is_word_char(text[end], long=long):
+            end += 1
+    else:
+        # Not on a word: skip to the next one, stopping at a line break so that
+        # ``w`` does not silently jump over blank lines.
+        while end < len(text) and not _is_word_char(text[end], long=long):
+            if text[end] == "\n":
+                end += 1
+                break
+            end += 1
+        while end < len(text) and _is_word_char(text[end], long=long):
+            end += 1
+
     while end < len(text) and text[end] in " \t":
         end += 1
+
     if end == start:
         return None
     return (start, end)
@@ -881,15 +889,22 @@ def _word_end(text: str, start: int, *, long: bool) -> tuple[int, int] | None:
     Returns:
         The range to select, or None at the end of the buffer.
     """
-    index = start
-    if index >= len(text):
+    if start >= len(text):
         return None
-    index += 1
-    while index < len(text) and not _is_word_char(text[index], long=long):
-        index += 1
-    end = index
-    while end < len(text) and _is_word_char(text[end], long=long):
-        end += 1
+
+    end = start
+    if _is_word_char(text[end], long=long):
+        # Already on a word: stop at its end rather than running on to the next.
+        while end < len(text) and _is_word_char(text[end], long=long):
+            end += 1
+    else:
+        # Skip the leading whitespace, which Kakoune includes in the selection,
+        # then take the word which follows.
+        while end < len(text) and not _is_word_char(text[end], long=long):
+            end += 1
+        while end < len(text) and _is_word_char(text[end], long=long):
+            end += 1
+
     if end == start:
         return None
     return (start, end)

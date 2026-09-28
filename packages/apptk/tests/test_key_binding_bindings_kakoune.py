@@ -245,3 +245,107 @@ def test_open_line(command: str, expected: str) -> None:
     buffer, app = run_kakoune("alpha\nbeta", command, cursor=2)
     assert buffer.text == expected
     assert app.kakoune_state.input_mode == InputMode.INSERT
+
+
+# Single-character words, which are where the word motions are easiest to get
+# wrong: stepping unconditionally over the character under the cursor makes a
+# one-character word run on into the next word.
+
+
+@pytest.mark.parametrize(
+    ("command", "cursor", "expected"),
+    [
+        ("kakoune-next-word", 0, "a "),
+        ("kakoune-next-word", 2, "b "),
+        ("kakoune-next-word", 6, "d"),
+        ("kakoune-word-end", 0, "a"),
+        ("kakoune-word-end", 2, "b"),
+        ("kakoune-word-end", 6, "d"),
+    ],
+)
+def test_word_motions_on_single_character_words(
+    command: str, cursor: int, expected: str
+) -> None:
+    """A one-character word selects itself, not itself and the next word."""
+    text = "a b c d"
+    buffer, _ = run_kakoune(text, command, cursor=cursor)
+    assert [text[s:e] for s, e in selection_ranges(buffer)] == [expected]
+
+
+def test_word_end_stops_at_the_end_of_the_current_word() -> None:
+    """``e`` on a word's last character selects only that word."""
+    text = "one two three"
+    buffer, _ = run_kakoune(text, "kakoune-word-end", cursor=2)
+    assert [text[s:e] for s, e in selection_ranges(buffer)] == ["e"]
+
+
+def test_word_motion_from_whitespace_takes_the_following_word() -> None:
+    """From whitespace, ``w`` takes the whitespace and the word after it."""
+    text = "one two"
+    buffer, _ = run_kakoune(text, "kakoune-next-word", cursor=3)
+    assert [text[s:e] for s, e in selection_ranges(buffer)] == [" two"]
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [("1", "a "), ("2", " b "), ("3", " c ")],
+)
+def test_word_motion_counts_select_successive_words(count: str, expected: str) -> None:
+    """A count moves over that many words, one at a time."""
+    text = "a b c d"
+    buffer, _ = run_kakoune(text, "kakoune-next-word", cursor=0, arg=count)
+    assert [text[s:e] for s, e in selection_ranges(buffer)] == [expected]
+
+
+def test_word_motion_stops_at_a_line_break() -> None:
+    """``w`` does not take the newline after a word.
+
+    The trailing whitespace ``w`` absorbs is spaces and tabs only, so a word at
+    the end of a line selects just the word.
+    """
+    text = "one\n\ntwo"
+    buffer, _ = run_kakoune(text, "kakoune-next-word", cursor=0)
+    selected = [text[s:e] for s, e in selection_ranges(buffer)]
+    assert selected == ["one"]
+
+
+# Trimming to whole lines at the end of the buffer, where a final line without a
+# trailing newline is not a complete line.
+
+
+@pytest.mark.parametrize(
+    ("text", "selection", "expected"),
+    [
+        ("aa\nbb\ncc", (0, 8), "aa\nbb"),
+        ("aa\nbb\ncc\n", (0, 9), "aa\nbb\ncc"),
+        ("aa\nbb", (0, 5), "aa"),
+    ],
+)
+def test_trim_excludes_a_final_line_without_a_newline(
+    text: str, selection: tuple[int, int], expected: str
+) -> None:
+    """``<a-x>`` drops a trailing line which has no newline after it."""
+    buffer, _ = run_kakoune(text, "kakoune-trim-lines", selections=[selection])
+    assert [text[s:e] for s, e in selection_ranges(buffer)] == [expected]
+
+
+def test_trim_drops_a_selection_with_no_complete_line() -> None:
+    """A selection containing no whole line is left untouched, with a bell."""
+    buffer, _ = run_kakoune("oneline", "kakoune-trim-lines", selections=[(0, 7)])
+    assert selection_ranges(buffer) == [(0, 7)]
+
+
+def test_count_distinguishes_third_word_from_three_words() -> None:
+    """``3w`` selects the third word; ``3W`` selects three consecutive words.
+
+    Kakoune's documentation calls this out explicitly, and the two are easy to
+    conflate: the plain motion replaces the selection each time so it lands on the
+    Nth word, while the extending form accumulates across all N.
+    """
+    text = "one two three four"
+
+    third, _ = run_kakoune(text, "kakoune-next-word", cursor=0, arg="3")
+    assert [text[s:e] for s, e in selection_ranges(third)] == [" three "]
+
+    consecutive, _ = run_kakoune(text, "kakoune-next-word-extend", cursor=0, arg="3")
+    assert [text[s:e] for s, e in selection_ranges(consecutive)] == ["one two three "]
