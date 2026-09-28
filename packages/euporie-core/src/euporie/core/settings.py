@@ -188,6 +188,7 @@ edit_mode = Setting(
         "emacs": EditingMode.EMACS,
         "vi": EditingMode.VI,
         "helix": EditingMode.HELIX,
+        "kakoune": EditingMode.KAKOUNE,
     },
     schema={"type": "string"},
     title="Editor key bindings",

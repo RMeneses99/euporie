@@ -18,6 +18,7 @@ class EditingMode(Enum):
 
     VI = "VI"
     HELIX = "HELIX"
+    KAKOUNE = "KAKOUNE"
     EMACS = "EMACS"
     MICRO = "MICRO"
 

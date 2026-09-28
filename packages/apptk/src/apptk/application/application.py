@@ -16,6 +16,8 @@ from apptk.enums import EditingMode
 from apptk.filters import to_filter
 from apptk.input.vt100 import Vt100Input
 from apptk.key_binding.helix_state import HelixState
+from apptk.key_binding.kakoune_state import KakouneState
+from apptk.key_binding.kakoune_state import get_state as get_kakoune_state
 from apptk.key_binding.key_bindings import (
     KeyBindingsBase,
 )
@@ -131,6 +133,8 @@ class Application(PtkApplication, Generic[_AppResult]):
         # Additional editing mode states
         self.micro_state = MicroState()
         self.helix_state = HelixState()
+        # Kakoune state is per buffer rather than per application - see the
+        # ``kakoune_state`` property - so there is nothing to instantiate here.
 
         # Events
         self.on_color_change = Event(self, on_color_change)
@@ -149,6 +153,20 @@ class Application(PtkApplication, Generic[_AppResult]):
 
         # Debounced resize task
         self._resize_task: asyncio.Task[None] | None = None
+
+    @property
+    def kakoune_state(self) -> KakouneState:
+        """Return the Kakoune state belonging to the focused buffer.
+
+        Unlike the Vi, micro and Helix states, which are per application, Kakoune
+        state is per buffer: in a notebook each cell is its own buffer, and leaving
+        one cell in insert mode must not put every other cell into insert mode.
+        Selections and marks are likewise kept per cell.
+
+        Returns:
+            The state for the current buffer.
+        """
+        return get_kakoune_state(self.current_buffer)
 
     @property
     def title(self) -> str:
