@@ -12,6 +12,7 @@ from apptk.commands import COMMANDS, Command, add_cmd
 from apptk.data_structures import Point
 from apptk.filters import Condition
 from apptk.key_binding.bindings.focus import focus_next, focus_previous
+from apptk.key_binding.utils import set_modal_input_mode
 from apptk.key_binding.vi_state import InputMode
 from apptk.layout.containers import (
     HSplit,
@@ -226,7 +227,9 @@ class CommandPalette(Dialog):
         self.text_area.buffer.text = ""
         self.to_focus = self.text_area
         app = get_app()
-        app.vi_state.input_mode = InputMode.INSERT
+        # Resets every modal state, not only Vi: before this the Helix and Kakoune
+        # modes kept whatever mode they were in when the palette opened.
+        set_modal_input_mode(app, InputMode.INSERT)
 
     def select(self, n: int, event: KeyPressEvent | None = None) -> None:
         """Change the index of the selected command.

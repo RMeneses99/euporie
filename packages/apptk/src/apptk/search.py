@@ -21,6 +21,7 @@ from apptk.application.current import get_app
 from apptk.commands import add_cmd
 from apptk.document import Document
 from apptk.filters.app import is_searching
+from apptk.key_binding.utils import set_modal_input_mode
 from apptk.key_binding.vi_state import InputMode
 from prompt_toolkit.search import (
     SearchDirection,
@@ -173,8 +174,7 @@ def start_global_search(
 
     layout.search_links[search_buffer_control] = target
     layout.focus(search_buffer_control)
-    app.vi_state.input_mode = InputMode.INSERT
-    app.helix_state.input_mode = InputMode.INSERT
+    set_modal_input_mode(app, InputMode.INSERT)
 
 
 def stop_global_search() -> None:
