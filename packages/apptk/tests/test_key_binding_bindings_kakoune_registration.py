@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import kakoune_utils  # noqa: F401  - imported for its command registration
 import pytest
-
 from apptk.commands import COMMANDS, get_cmd
 from apptk.key_binding.bindings.kakoune import (
     KAKOUNE_SEARCH_COMMANDS,

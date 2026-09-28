@@ -9,12 +9,11 @@ arguments. ``m`` is a motion here, not a sub-mode prefix.
 from __future__ import annotations
 
 import pytest
-from kakoune_utils import make_event, make_kakoune_app, run_kakoune, selection_ranges
-
 from apptk.application.current import set_app
 from apptk.buffer import Buffer
 from apptk.commands import get_cmd
 from apptk.document import Document
+from kakoune_utils import make_event, make_kakoune_app, run_kakoune, selection_ranges
 
 
 def _object(
