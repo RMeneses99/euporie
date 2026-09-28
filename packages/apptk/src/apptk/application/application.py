@@ -163,6 +163,14 @@ class Application(PtkApplication, Generic[_AppResult]):
         one cell in insert mode must not put every other cell into insert mode.
         Selections and marks are likewise kept per cell.
 
+        Note:
+            With no focused :py:class:`BufferControl`, ``current_buffer`` returns a
+            fresh throwaway buffer on each access, so the state resolved here is
+            also fresh each time and a write would not be read back. That only
+            arises where nothing is focused - a cell is always focused in normal
+            use - but code which mutates the state outside an event handler should
+            hold the buffer, not re-read this property.
+
         Returns:
             The state for the current buffer.
         """
