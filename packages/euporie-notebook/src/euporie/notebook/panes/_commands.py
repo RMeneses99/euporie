@@ -15,6 +15,7 @@ from apptk.filters.buffer import (
 from apptk.filters.modes import (
     exitable_mode,
     insert_mode,
+    kakoune_mode,
 )
 
 from euporie.core.filters import (
@@ -70,6 +71,25 @@ def _enter_cell_edit_mode() -> None:
 )
 def _exit_edit_mode() -> None:
     """Exit cell edit mode."""
+    from euporie.notebook.panes.notebook import Notebook
+
+    if isinstance(nb := get_app().pane, Notebook):
+        nb.exit_edit_mode()
+
+
+@add_cmd(
+    keys=[("escape", "escape")],
+    filter=cell_has_focus & buffer_has_focus & kakoune_mode,
+)
+def _exit_edit_mode_kakoune() -> None:
+    """Exit cell edit mode from Kakoune mode, which needs a second Escape.
+
+    In Kakoune :kbd:`Escape` never leaves the buffer: it returns to normal mode or
+    cancels whatever is pending. Honouring that means the single Escape cannot also
+    leave the cell, so cell exit is a second press. ``apptk`` deliberately applies
+    no flush timeout after Escape, so the first press is not slowed down by waiting
+    to see whether a second follows.
+    """
     from euporie.notebook.panes.notebook import Notebook
 
     if isinstance(nb := get_app().pane, Notebook):
