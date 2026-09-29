@@ -56,6 +56,7 @@ from euporie.core import settings as core_settings
 from euporie.core.app.base import ConfigurableApp
 from euporie.core.app.cursor import CursorConfig
 from euporie.core.helix_bindings import register_helix_app_bindings
+from euporie.core.kakoune_bindings import register_kakoune_app_bindings
 from euporie.core.languages import KNOWN_FORMATTERS, KNOWN_LANGUAGES, KNOWN_LSP_SERVERS
 from euporie.core.log import setup_logs
 from euporie.core.style import (
@@ -117,6 +118,18 @@ def _pygments_style(theme: str) -> BaseStyle:
     return style_from_pygments_cls(get_style_by_name(theme))
 
 
+def _custom_style(styles: dict[str, str]) -> BaseStyle:
+    """Build a style from the user's ``custom_styles`` configuration.
+
+    Args:
+        styles: A mapping of style names to prompt-toolkit style strings.
+
+    Returns:
+        A style with the user's overrides, or an empty one when none are set.
+    """
+    return Style(list(styles.items()))
+
+
 class BaseApp(ConfigurableApp, Application, ABC):
     """All euporie apps.
 
@@ -142,6 +155,7 @@ class BaseApp(ConfigurableApp, Application, ABC):
         core_settings.log_level,
         core_settings.log_level_stdout,
         core_settings.log_config,
+        core_settings.quiet_config,
         # Files
         core_settings.files,
         core_settings.backup_on_save,
@@ -220,10 +234,11 @@ class BaseApp(ConfigurableApp, Application, ABC):
         """
         self.color_palette = ColorPalette()
 
-        # Attach application commands to the Helix space and window sub-modes.
-        # This runs before the configuration is applied, so that user key-binding
-        # overrides can still modify or remove these bindings.
+        # Attach application commands to the Helix space and window sub-modes, and
+        # to Kakoune's user mode. This runs before the configuration is applied, so
+        # that user key-binding overrides can still modify or remove these bindings.
         register_helix_app_bindings()
+        register_kakoune_app_bindings()
 
         # Apply key binding configuration before Application.__init__ triggers
         # lazy loading of editing-mode bindings (e.g. load_helix_bindings),
@@ -247,6 +262,10 @@ class BaseApp(ConfigurableApp, Application, ABC):
                         DynamicStyle(lambda: _pygments_style(self.config.syntax_theme)),
                         *BASE_STYLES,
                         PaletteStyle(self.color_palette, build_style),
+                        # Last, so that a user's overrides win over the styles
+                        # derived from the colour palette. Dynamic so that editing
+                        # the setting takes effect without a restart.
+                        DynamicStyle(lambda: _custom_style(self.config.custom_styles)),
                     ]
                 ),
                 "style_transformation": merge_style_transformations(
@@ -926,8 +945,11 @@ class BaseApp(ConfigurableApp, Application, ABC):
             name: The name of the LSP server to create a client for.
 
         Returns:
-            A new LSP client instance, or None if config is missing/invalid.
+            A new LSP client instance, or None if the config is missing or invalid,
+            or the server's executable is not installed.
         """
+        from shutil import which
+
         from euporie.core.lsp import LspClient
 
         if not (config := self.lsp_server_configs.get(name)):
@@ -936,6 +958,16 @@ class BaseApp(ConfigurableApp, Application, ABC):
 
         if not (command := config.get("command")):
             log.debug("LSP server %r has no command defined", name)
+            return None
+
+        # Several servers are configured by default for a given language, so an
+        # absent executable is the normal case rather than an error. Checking here
+        # keeps it out of the exception path below, which would otherwise log a
+        # traceback for every server the user has not installed.
+        if which(command[0]) is None:
+            log.info(
+                "Skipping language server %r: %r is not installed", name, command[0]
+            )
             return None
 
         settings: dict[str, Any] = config.get("settings", {})

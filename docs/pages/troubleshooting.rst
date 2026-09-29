@@ -123,6 +123,45 @@ If you're using :program:`ruff-lsp` and experiencing formatting issues, note tha
    command = ["ruff", "server"]
    languages = ["python"]
 
+If a server does not appear to start, run with ``--log-level debug``. Euporie logs a message when it skips a server whose executable it cannot find, and the server's own standard error output is logged too, which is usually where the reason appears.
+
+Remember that servers inherit euporie's environment. A server installed only in a project's virtual environment is found only when euporie is launched from that environment.
+
+
+.. _config-option-not-recognised:
+
+A setting appears to have no effect
+-----------------------------------
+
+A value which fails validation is discarded and the setting falls back to its default, which can look as though the option was never written. Euporie reports such values at startup::
+
+   euporie: 1 invalid setting in /home/user/.config/euporie/config.toml
+     edit_mode = 'kakune'
+       edit_mode must be one of ['micro', 'emacs', 'vi', 'helix']
+
+The report names the file, so it can be found when several are in play. Pass :option:`--quiet-config` to suppress it - useful when deliberately keeping settings which are not valid for the version being run.
+
+A common cause is a list where a table is expected. :confval:`formatters` and :confval:`language_servers` are both keyed by name:
+
+.. code-block:: toml
+
+   # Correct - a table keyed by formatter name
+   [formatters.ruff-format]
+   command = ["ruff", "format", "-"]
+   languages = ["python"]
+
+.. code-block:: json
+
+   {
+     "formatters": [
+       {"command": ["ruff", "format", "-"], "languages": ["python"]}
+     ]
+   }
+
+The second form is a list, and is rejected.
+
+Note also that configuration is read from ``config.json`` before ``config.toml``, so a value set in both files takes its value from the TOML file. Setting the same option in both is a common source of surprise - for example an :confval:`edit_mode` which appears not to change.
+
 
 Menu/mouse not working on OSX
 -----------------------------

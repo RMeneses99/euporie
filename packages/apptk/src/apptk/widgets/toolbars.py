@@ -33,6 +33,7 @@ from apptk.filters.utils import to_filter
 from apptk.formatted_text import to_formatted_text
 from apptk.formatted_text.utils import apply_style, pad, truncate
 from apptk.key_binding.key_bindings import KeyBindings
+from apptk.key_binding.utils import set_modal_input_mode
 from apptk.key_binding.vi_state import InputMode
 from apptk.layout.containers import (
     _CONTAINER_STATUSES,
@@ -328,8 +329,7 @@ class CommandBar:
             False to clear the buffer text.
         """
         app = get_app()
-        app.vi_state.input_mode = InputMode.NAVIGATION
-        app.helix_state.input_mode = InputMode.NAVIGATION
+        set_modal_input_mode(app, InputMode.NAVIGATION)
         app.layout.focus_last()
         text = buffer.text.strip()
         cmd, args = _parse_cmd(text)
@@ -354,8 +354,7 @@ class CommandBar:
     def _activate_command_bar(event: KeyPressEvent) -> None:
         """Enter command mode."""
         event.app.layout.focus(COMMAND_BUFFER)
-        event.app.vi_state.input_mode = InputMode.INSERT
-        event.app.helix_state.input_mode = InputMode.INSERT
+        set_modal_input_mode(event.app, InputMode.INSERT)
 
     @add_cmd(
         name="activate-command-bar-shell",
@@ -369,8 +368,7 @@ class CommandBar:
         app = event.app
         layout = app.layout
         layout.focus(COMMAND_BUFFER)
-        event.app.vi_state.input_mode = InputMode.INSERT
-        event.app.helix_state.input_mode = InputMode.INSERT
+        set_modal_input_mode(event.app, InputMode.INSERT)
         if isinstance(control := layout.current_control, BufferControl):
             buffer = control.buffer
             buffer.text = "shell "
@@ -387,8 +385,7 @@ class CommandBar:
         layout = app.layout
         layout.focus(COMMAND_BUFFER)
         if isinstance(control := layout.current_control, BufferControl):
-            app.vi_state.input_mode = InputMode.NAVIGATION
-            app.helix_state.input_mode = InputMode.NAVIGATION
+            set_modal_input_mode(app, InputMode.NAVIGATION)
             buffer = control.buffer
             buffer.reset()
             app.layout.focus_previous()

@@ -41,6 +41,66 @@ Syntax themes come from :doc:`Pygments <pygments:styles>` and include hundreds o
 
 Switch from inside the :term:`app` via :menuselection:`Settings --> Syntax Theme`, or set :confval:`syntax_theme`.
 
+*************
+Morphogenesis
+*************
+
+Euporie ships the ``morphogenesis`` syntax theme: a dark blue scheme which ranks tokens by **brightness rather than hue**, so the eye can tell what matters without learning a colour-to-concept mapping. Functions and types are the only saturated colour, keywords are muted rather than bold, punctuation is the dimmest thing on screen, and warm colours are reserved for errors — so a correct file shows none.
+
+The syntax theme works on its own:
+
+.. code-block:: toml
+
+   syntax_theme = "morphogenesis"
+
+To match the application chrome to it as well, the theme expects the terminal to be running the same palette. Inheriting the base rather than restating it keeps the two in agreement, and is also the only :confval:`color_scheme` value which leaves the cell background unpainted — so a terminal background image shows through:
+
+.. code-block:: toml
+
+   syntax_theme = "morphogenesis"
+   color_scheme = "default"
+   accent_color = "#00d4ff"
+
+   [notebook]
+   background_pattern = 0
+
+   [custom_styles]
+   "status" = "fg:#e8f0fe bg:#1a3a5c"
+   "menu" = "fg:#e8f0fe bg:#1a3a5c"
+   "app tab-bar tab active" = "bold fg:#e8f0fe bg:#2a6fb5"
+   "app tab-bar tab inactive" = "fg:#8ab4d4 bg:#1a3a5c"
+   "line-number" = "fg:#2a3f54"
+   "line-number.current" = "bold fg:#00d4ff"
+   "matching-bracket.cursor" = "bold fg:#00d4ff"
+   "matching-bracket.other" = "bold fg:#00d4ff"
+   "selected.secondary" = "bg:#1a3a5c"
+
+If your terminal is *not* using the Morphogenesis palette, set the base explicitly instead of inheriting it. This looks the same anywhere — over SSH, in a multiplexer — but paints a solid background, so any terminal background image is covered:
+
+.. code-block:: toml
+
+   color_scheme = "custom"
+   custom_background_color = "#0d1b2a"
+   custom_foreground_color = "#e8f0fe"
+
+.. warning::
+
+   ``#1a3a5c`` and ``#2a3f54`` are surfaces, not text colours. At 1.5:1 and 1.6:1 against the background they are correct for a selection background, a border or a whitespace marker — where position carries the meaning and the colour only has to be perceptible — but unreadable as text. When a dim foreground is wanted, use ``#6c8aa8`` (4.8:1).
+
+**************
+Custom styles
+**************
+
+Individual style keys can be overridden with :confval:`custom_styles`, a mapping of style names to :doc:`prompt-toolkit <prompt_toolkit:index>` style strings. This is the only way to set an exact colour: euporie otherwise *derives* every style from the foreground, background and accent colours, so a theme specifying particular values cannot express them any other way.
+
+.. code-block:: toml
+
+   [custom_styles]
+   "cell input prompt" = "fg:purple"
+   "cell output prompt" = "fg:green"
+
+Overrides are applied after the derived styles, so they win. The available key names are those used in :py:func:`euporie.core.style.build_style`.
+
 *****************
 Per-app overrides
 *****************

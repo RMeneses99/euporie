@@ -10,7 +10,7 @@ from apptk.enums import EditingMode
 from apptk.filters.app import buffer_has_focus, is_read_only
 from apptk.filters.environment import in_mplex
 from apptk.output.color_depth import ColorDepth
-from pygments.styles import STYLE_MAP as pygments_styles
+from pygments.styles import get_all_styles as pygments_styles
 
 from euporie.core import __version__
 from euporie.core.app.current import available_apps
@@ -92,6 +92,23 @@ log_level_stdout = Setting(
     description="""
         When set, logging events at the given level are printed to the standard
         output.
+    """,
+)
+
+quiet_config = Setting(
+    name="quiet_config",
+    flags=["--quiet-config"],
+    type_=bool,
+    default=False,
+    help_="Do not report invalid configuration values",
+    description="""
+        By default, configuration values which fail validation are reported to the
+        standard error stream at startup, since they are silently ignored and would
+        otherwise be hard to diagnose.
+
+        Set this to :py:const:`True` to suppress that report - useful when
+        deliberately keeping settings which are not valid for the running version,
+        such as a configuration file shared between versions.
     """,
 )
 
@@ -188,6 +205,7 @@ edit_mode = Setting(
         "emacs": EditingMode.EMACS,
         "vi": EditingMode.VI,
         "helix": EditingMode.HELIX,
+        "kakoune": EditingMode.KAKOUNE,
     },
     schema={"type": "string"},
     title="Editor key bindings",
@@ -640,7 +658,11 @@ syntax_theme = Setting(
     help_="Syntax highlighting theme",
     default="euporie",
     schema={
-        "enum": ["euporie", *pygments_styles.keys()],
+        # ``get_all_styles`` includes styles registered through the
+        # ``pygments.styles`` entry point, which euporie's own styles use. Building
+        # from ``STYLE_MAP`` would list only Pygments' built-ins, so every euporie
+        # style would have to be named here by hand to pass validation.
+        "enum": sorted(pygments_styles()),
     },
     description="""
         The name of the pygments style to use for syntax highlighting.

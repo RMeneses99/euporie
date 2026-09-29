@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import fastjsonschema
 from apptk.commands import add_cmd
@@ -24,6 +24,27 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger(__name__)
+
+
+class ConfigProblem(NamedTuple):
+    """A configuration value which failed validation and was discarded.
+
+    Collected as well as logged, because the log message only reaches the
+    in-application log tab: config problems occur before the interface exists, and
+    may be the very reason the user cannot get to it.
+
+    Attributes:
+        name: The setting which was rejected.
+        value: The offending value.
+        source: Where it came from - a file path where there is one, otherwise a
+            description of the layer such as ``"Command line"``.
+        message: The validator's explanation.
+    """
+
+    name: str
+    value: Any
+    source: str
+    message: str
 
 
 class JSONEncoderPlus(json.JSONEncoder):
@@ -133,6 +154,8 @@ class SettingStore:
         self._app = app
         self.settings: dict[str, Setting] = {s.name: s for s in settings}
         self._resolved_cache: dict[str, Any] = {}
+        #: Values rejected during the most recent :py:meth:`load`.
+        self.problems: list[ConfigProblem] = []
 
         # Build full layer stack: defaults (bottom) -> middle -> overrides (top)
         self._defaults_layer = DefaultsLayer(self.settings)
@@ -209,6 +232,7 @@ class SettingStore:
         from euporie.core.config._layers import CliLayer
 
         self._resolved_cache.clear()
+        self.problems.clear()
         applicable = self.settings
         for layer in self._layers:
             if args is not None and isinstance(layer, CliLayer):
@@ -257,17 +281,46 @@ class SettingStore:
                     self._schema_validate(json_data)
                     validated[name] = value
                 except fastjsonschema.JsonSchemaValueException as error:
+                    message = error.message.replace("data.", "")
                     log.warning(
                         "Invalid %s setting: `%s = %r`\n%s",
                         source,
                         name,
                         value,
-                        error.message.replace("data.", ""),
+                        message,
+                    )
+                    self.problems.append(
+                        ConfigProblem(name, value, self._describe(data), message)
                     )
             elif name not in self.settings:
                 if not isinstance(value, dict):
+                    # Logged but deliberately not collected for reporting. A store
+                    # only holds the settings applicable to its own app, so a
+                    # perfectly valid key - state such as ``recent_files``, or
+                    # another app's setting - reaches this branch routinely.
+                    # Surfacing it to the user would be noise about a correct file.
                     log.warning("Option '%s' not recognised in %s", name, source)
         return validated
+
+    @staticmethod
+    def _describe(layer: Mapping[str, Any]) -> str:
+        """Describe where a layer's values came from.
+
+        Args:
+            layer: The layer being validated.
+
+        Returns:
+            The backing file's path where the layer has one, otherwise a readable
+            form of the layer's class name.
+        """
+        if (path := getattr(layer, "_path", None)) is not None:
+            return str(path)
+        # e.g. ``CliLayer`` -> ``command line``
+        name = type(layer).__name__.removesuffix("Layer")
+        return "".join(
+            f" {char.lower()}" if char.isupper() and i else char.lower()
+            for i, char in enumerate(name)
+        )
 
     def _on_change(self, setting: Setting) -> None:
         """Handle a setting value change by saving to the writable layer.

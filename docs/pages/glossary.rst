@@ -73,7 +73,7 @@ Glossary
 
    Editor mode
       The flavour of in-cell key bindings used while editing - one of
-      ``micro``, ``emacs``, ``vi`` or ``helix``. Selected via the
+      ``micro``, ``emacs``, ``vi``, ``helix`` or ``kakoune``. Selected via the
       :confval:`edit_mode` configuration option.
 
    Kernel

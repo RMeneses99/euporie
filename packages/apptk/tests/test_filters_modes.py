@@ -19,6 +19,14 @@ from apptk.filters.modes import (
     helix_view_mode,
     helix_window_mode,
     insert_mode,
+    kakoune_goto_mode,
+    kakoune_insert_mode,
+    kakoune_mode,
+    kakoune_navigation_mode,
+    kakoune_normal_mode,
+    kakoune_replace_mode,
+    kakoune_user_mode,
+    kakoune_view_mode,
     micro_insert_mode,
     micro_mode,
     micro_replace_mode,
@@ -26,6 +34,7 @@ from apptk.filters.modes import (
     replace_mode,
 )
 from apptk.key_binding.helix_state import HelixMode, InputMode
+from apptk.key_binding.kakoune_state import KakouneMode
 
 HELIX_FILTERS = [
     helix_goto_mode,
@@ -41,7 +50,30 @@ HELIX_FILTERS = [
     helix_window_mode,
 ]
 
-NON_HELIX_MODES = [EditingMode.VI, EditingMode.EMACS, EditingMode.MICRO]
+NON_HELIX_MODES = [
+    EditingMode.VI,
+    EditingMode.EMACS,
+    EditingMode.MICRO,
+    EditingMode.KAKOUNE,
+]
+
+KAKOUNE_FILTERS = [
+    kakoune_goto_mode,
+    kakoune_insert_mode,
+    kakoune_mode,
+    kakoune_navigation_mode,
+    kakoune_normal_mode,
+    kakoune_replace_mode,
+    kakoune_user_mode,
+    kakoune_view_mode,
+]
+
+NON_KAKOUNE_MODES = [
+    EditingMode.VI,
+    EditingMode.EMACS,
+    EditingMode.MICRO,
+    EditingMode.HELIX,
+]
 
 
 @pytest.mark.parametrize("editing_mode", NON_HELIX_MODES)
@@ -147,3 +179,118 @@ def test_micro_filters_unaffected_by_helix_guards() -> None:
         assert micro_mode()
         assert micro_insert_mode()
         assert not micro_replace_mode()
+
+
+def _focused_app(editing_mode: EditingMode = EditingMode.KAKOUNE) -> Application:
+    """Build an application with a real focused buffer.
+
+    Kakoune state is resolved per buffer, and a bare ``Application`` has no
+    focused ``BufferControl`` - ``current_buffer`` then fabricates a throwaway
+    buffer per access, so a write and a subsequent read would land on different
+    states. Tests which mutate the state need a real one to resolve to.
+
+    Args:
+        editing_mode: The editing mode to start in.
+
+    Returns:
+        An application whose ``kakoune_state`` is stable across accesses.
+    """
+    from apptk.buffer import Buffer
+    from apptk.layout import Layout, Window
+    from apptk.layout.controls import BufferControl
+
+    window = Window(BufferControl(Buffer(name="test-buffer")))
+    layout = Layout(window, focused_element=window)
+    return Application(layout=layout, editing_mode=editing_mode)
+
+
+@pytest.mark.parametrize("editing_mode", NON_KAKOUNE_MODES)
+@pytest.mark.parametrize("kakoune_filter", KAKOUNE_FILTERS)
+def test_kakoune_filters_false_outside_kakoune_mode(
+    editing_mode: EditingMode, kakoune_filter: object
+) -> None:
+    """Kakoune filters are False in other editing modes, whatever the state.
+
+    All modes' bindings are loaded into one merged set, so a filter which trusted
+    stale state would let Kakoune bindings fire while another mode was active.
+    """
+    app = _focused_app(editing_mode)
+    # Leave stale Kakoune state behind, as a runtime edit-mode switch would.
+    app.kakoune_state.input_mode = InputMode.INSERT
+    app.kakoune_state.mode = KakouneMode.GOTO
+    with set_app(app):
+        assert not kakoune_filter()
+
+
+@pytest.mark.parametrize("kakoune_filter", KAKOUNE_FILTERS)
+def test_helix_and_kakoune_filters_are_mutually_exclusive(
+    kakoune_filter: object,
+) -> None:
+    """No Kakoune filter fires while Helix is the active mode.
+
+    The two modes share a great deal of behaviour, so this pins the one thing that
+    keeps their bindings apart.
+    """
+    app = _focused_app(EditingMode.HELIX)
+    app.helix_state.input_mode = InputMode.NAVIGATION
+    app.kakoune_state.input_mode = InputMode.NAVIGATION
+    with set_app(app):
+        assert not kakoune_filter()
+
+
+def test_kakoune_normal_mode_requires_no_sub_mode() -> None:
+    """``kakoune_normal_mode`` is False while a sub-mode is active."""
+    app = _focused_app()
+    with set_app(app):
+        app.kakoune_state.input_mode = InputMode.NAVIGATION
+        app.kakoune_state.mode = KakouneMode.NORMAL
+        assert kakoune_normal_mode()
+
+        app.kakoune_state.mode = KakouneMode.GOTO
+        assert not kakoune_normal_mode()
+        assert kakoune_goto_mode()
+
+
+def test_kakoune_insert_mode_joins_the_composite_filter() -> None:
+    """Kakoune insert mode is visible to the shared ``insert_mode`` filter.
+
+    That composite drives the cursor shape and the autopair bindings, so a mode
+    missing from it would show the wrong cursor while inserting.
+    """
+    app = _focused_app()
+    with set_app(app):
+        app.kakoune_state.input_mode = InputMode.INSERT
+        assert insert_mode()
+
+        app.kakoune_state.input_mode = InputMode.NAVIGATION
+        assert not insert_mode()
+        assert navigation_mode()
+
+
+def test_kakoune_replace_mode_joins_the_composite_filter() -> None:
+    """Kakoune replace mode is visible to the shared ``replace_mode`` filter."""
+    app = _focused_app()
+    with set_app(app):
+        app.kakoune_state.input_mode = InputMode.REPLACE
+        assert replace_mode()
+
+
+def test_kakoune_state_is_per_buffer() -> None:
+    """Each buffer has its own Kakoune state, so cells do not share a mode."""
+    from apptk.buffer import Buffer
+    from apptk.layout import Layout, Window
+    from apptk.layout.containers import HSplit
+    from apptk.layout.controls import BufferControl
+
+    first, second = Buffer(name="cell-a"), Buffer(name="cell-b")
+    window_a = Window(BufferControl(first))
+    window_b = Window(BufferControl(second))
+    layout = Layout(HSplit([window_a, window_b]), focused_element=window_a)
+    app = Application(layout=layout, editing_mode=EditingMode.KAKOUNE)
+
+    app.kakoune_state.input_mode = InputMode.INSERT
+    layout.focus(window_b)
+    assert app.kakoune_state.input_mode == InputMode.NAVIGATION
+
+    layout.focus(window_a)
+    assert app.kakoune_state.input_mode == InputMode.INSERT

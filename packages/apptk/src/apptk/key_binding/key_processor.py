@@ -37,9 +37,9 @@ class KeyProcessor(PtKeyProcessor):
     def _call_handler(self, handler: Binding, key_sequence: list[KeyPress]) -> None:
         """Call a key-binding handler, recording into a Helix macro if active.
 
-        Upstream records macro key presses onto ``app.vi_state``. Helix keeps its
-        own state object, so the key sequence is additionally recorded there when
-        a Helix macro is being captured.
+        Upstream records macro key presses onto ``app.vi_state``. The Helix and
+        Kakoune modes each keep their own state object, so the key sequence is
+        additionally recorded onto whichever of those is active.
 
         Args:
             handler: The key binding to invoke.
@@ -48,12 +48,14 @@ class KeyProcessor(PtKeyProcessor):
         from apptk.enums import EditingMode
 
         app = get_app()
-        helix_state = getattr(app, "helix_state", None)
-        recording_helix = (
-            app.editing_mode == EditingMode.HELIX
-            and helix_state is not None
-            and bool(helix_state.recording_register)
-        )
+        # Resolve the state object belonging to the active mode, rather than
+        # testing for each mode in turn.
+        attribute = {
+            EditingMode.HELIX: "helix_state",
+            EditingMode.KAKOUNE: "kakoune_state",
+        }.get(app.editing_mode)
+        state = getattr(app, attribute, None) if attribute else None
+        was_recording = state is not None and bool(state.recording_register)
 
         super()._call_handler(handler, key_sequence)
 
@@ -61,13 +63,13 @@ class KeyProcessor(PtKeyProcessor):
         # handler ran, so that the keys which start and stop recording are
         # themselves excluded.
         if (
-            recording_helix
+            was_recording
             and handler.record_in_macro()
-            and helix_state is not None
-            and helix_state.recording_register
+            and state is not None
+            and state.recording_register
         ):
             for key_press in key_sequence:
-                helix_state.current_recording += key_press.data
+                state.current_recording += key_press.data
 
     def _start_timeout(self) -> None:
         """Start auto flush timeout. Similar to Vim's `timeoutlen` option.

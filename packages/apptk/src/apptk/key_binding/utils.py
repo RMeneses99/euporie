@@ -8,7 +8,9 @@ from apptk.key_binding.key_bindings import _parse_key
 from apptk.keys import Keys
 
 if TYPE_CHECKING:
+    from apptk.application.application import Application
     from apptk.key_binding import KeyPressEvent
+    from apptk.key_binding.vi_state import InputMode
     from apptk.keys import AnyKeys
 
 
@@ -82,3 +84,22 @@ def format_keys(keys: list[tuple[str | Keys, ...]]) -> list[str]:
     keys_ = list(dict(zip(keys, range(len(keys)))).keys())
 
     return s
+
+
+def set_modal_input_mode(app: Application, mode: InputMode) -> None:
+    """Set the input mode on every modal editing state the application holds.
+
+    The Vi, Helix and Kakoune modes each keep their own state object, so a widget
+    which takes or releases focus has to reset all of them rather than guess which
+    is active. Collecting that here keeps the call sites to one line and stops a
+    newly added mode being forgotten at one of them.
+
+    Args:
+        app: The application whose modal states should be updated.
+        mode: The input mode to set.
+    """
+    # ``micro_state`` is excluded: it uses its own enum rather than ``InputMode``.
+    for attribute in ("vi_state", "helix_state", "kakoune_state"):
+        state = getattr(app, attribute, None)
+        if state is not None:
+            state.input_mode = mode

@@ -24,12 +24,16 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _helix_selections() -> list[tuple[int, int]]:
-    """Return the active Helix selection ranges, if there are several.
+def _modal_selections() -> list[tuple[int, int]]:
+    """Return the active multiple-selection ranges of whichever mode is in use.
+
+    Both the Helix and Kakoune editing modes support several simultaneous
+    selections, each keeping them on their own state object - Helix per
+    application, Kakoune per buffer. This resolves whichever is active.
 
     Returns:
         The additional selection ranges, or an empty list when a single selection
-        is active or Helix mode is not in use.
+        is active or no selection-based mode is in use.
     """
     from apptk.application.current import get_app
     from apptk.enums import EditingMode
@@ -38,13 +42,27 @@ def _helix_selections() -> list[tuple[int, int]]:
         app = get_app()
     except Exception:
         return []
-    if app.editing_mode != EditingMode.HELIX:
+
+    attribute = {
+        EditingMode.HELIX: "helix_state",
+        EditingMode.KAKOUNE: "kakoune_state",
+    }.get(app.editing_mode)
+    if attribute is None:
         return []
-    return list(getattr(app.helix_state, "selections", []) or [])
+
+    state = getattr(app, attribute, None)
+    return list(getattr(state, "selections", []) or [])
+
+
+# Retained under the old name: the Helix implementation and its tests refer to it.
+_helix_selections = _modal_selections
 
 
 class HelixSelectionProcessor(HighlightSelectionProcessor):
-    """Highlight every Helix selection, not just the primary one.
+    """Highlight every modal selection, not just the primary one.
+
+    Serves both the Helix and Kakoune editing modes; the name is kept for
+    compatibility with existing references.
 
     The upstream processor reads ``document.selection_range_at_line``, which knows
     only about the buffer's single selection. When several Helix selections are
@@ -63,7 +81,7 @@ class HelixSelectionProcessor(HighlightSelectionProcessor):
         Returns:
             The transformed line.
         """
-        selections = _helix_selections()
+        selections = _modal_selections()
         if len(selections) < 2:
             # Single selection: the upstream implementation is correct and cheaper.
             return super().apply_transformation(transformation_input)
@@ -136,7 +154,7 @@ class HelixMultipleCursors(Processor):
             _,
         ) = transformation_input.unpack()
 
-        if len(_helix_selections()) < 2:
+        if len(_modal_selections()) < 2:
             return Transformation(fragments)
 
         positions = buffer_control.buffer.multiple_cursor_positions
