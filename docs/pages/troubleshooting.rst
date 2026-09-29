@@ -130,14 +130,18 @@ Remember that servers inherit euporie's environment. A server installed only in 
 
 .. _config-option-not-recognised:
 
-A configuration option is "not recognised"
-------------------------------------------
+A setting appears to have no effect
+-----------------------------------
 
-A warning such as::
+A value which fails validation is discarded and the setting falls back to its default, which can look as though the option was never written. Euporie reports such values at startup::
 
-   Option 'formatters' not recognised in JsonFileLayer
+   euporie: 1 invalid setting in /home/user/.config/euporie/config.toml
+     edit_mode = 'kakune'
+       edit_mode must be one of ['micro', 'emacs', 'vi', 'helix']
 
-means the value failed schema validation and was discarded, so the option had no effect. The usual cause is a list where a table is expected. :confval:`formatters` and :confval:`language_servers` are both keyed by name:
+The report names the file, so it can be found when several are in play. Pass :option:`--quiet-config` to suppress it - useful when deliberately keeping settings which are not valid for the version being run.
+
+A common cause is a list where a table is expected. :confval:`formatters` and :confval:`language_servers` are both keyed by name:
 
 .. code-block:: toml
 

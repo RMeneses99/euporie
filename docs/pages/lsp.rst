@@ -103,7 +103,7 @@ Cells can be formatted two ways, and both can be active at once - euporie applie
    command = ["ruff", "format", "-"]
    languages = ["python"]
 
-Note that :confval:`formatters` is a table *keyed by formatter name*, not a list. A list is rejected by validation and the option is silently dropped - see :ref:`troubleshooting <config-option-not-recognised>`.
+Note that :confval:`formatters` is a table *keyed by formatter name*, not a list. A list is rejected by validation and the option is ignored, which euporie reports at startup - see :ref:`troubleshooting <config-option-not-recognised>`.
 
 To format, use one of:
 
