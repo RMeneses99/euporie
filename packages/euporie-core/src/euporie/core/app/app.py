@@ -118,6 +118,18 @@ def _pygments_style(theme: str) -> BaseStyle:
     return style_from_pygments_cls(get_style_by_name(theme))
 
 
+def _custom_style(styles: dict[str, str]) -> BaseStyle:
+    """Build a style from the user's ``custom_styles`` configuration.
+
+    Args:
+        styles: A mapping of style names to prompt-toolkit style strings.
+
+    Returns:
+        A style with the user's overrides, or an empty one when none are set.
+    """
+    return Style(list(styles.items()))
+
+
 class BaseApp(ConfigurableApp, Application, ABC):
     """All euporie apps.
 
@@ -250,6 +262,10 @@ class BaseApp(ConfigurableApp, Application, ABC):
                         DynamicStyle(lambda: _pygments_style(self.config.syntax_theme)),
                         *BASE_STYLES,
                         PaletteStyle(self.color_palette, build_style),
+                        # Last, so that a user's overrides win over the styles
+                        # derived from the colour palette. Dynamic so that editing
+                        # the setting takes effect without a restart.
+                        DynamicStyle(lambda: _custom_style(self.config.custom_styles)),
                     ]
                 ),
                 "style_transformation": merge_style_transformations(
