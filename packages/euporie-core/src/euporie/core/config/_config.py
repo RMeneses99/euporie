@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,7 +17,7 @@ from euporie.core.config._layers import (
     JsonFileLayer,
     TomlFileLayer,
 )
-from euporie.core.config._store import SettingStore
+from euporie.core.config._store import ConfigProblem, SettingStore
 
 if TYPE_CHECKING:
     from euporie.core.config._layers import Layer
@@ -64,6 +65,8 @@ class Config(SettingStore):
         config_dir.mkdir(exist_ok=True, parents=True)
         self._config_path = config_dir / "config.toml"
         self._json_config_path = config_dir / "config.json"
+        #: Non-fatal messages about the configuration itself, reported at startup.
+        self._notices: list[str] = []
 
         # Add read-only JSON layers for legacy config if JSON exists
         # but TOML has not yet been created
@@ -98,6 +101,8 @@ class Config(SettingStore):
         """
         from euporie.core.log import BufferedLogs, setup_logs
 
+        self._notices: list[str] = []
+
         with BufferedLogs(logger=logging.getLogger("euporie")):
             try:
                 super().load(args=args)
@@ -105,9 +110,58 @@ class Config(SettingStore):
                 setup_logs(self)
 
         if self._json_config_path.exists():
-            log.warning(
-                "Legacy JSON configuration file found at '%s'. "
-                "Please migrate your settings to '%s' and remove the JSON file.",
-                self._json_config_path,
-                self._config_path,
+            message = (
+                f"Legacy JSON configuration file found at "
+                f"'{self._json_config_path}'. Please migrate your settings to "
+                f"'{self._config_path}' and remove the JSON file."
             )
+            log.warning("%s", message)
+            self._notices.append(message)
+
+        self._report_problems()
+
+    def _report_problems(self) -> None:
+        """Print rejected configuration values to the standard error stream.
+
+        Invalid values are discarded and the setting falls back to its default, so
+        without this a mistyped setting is indistinguishable from one which was
+        never written. The log message alone is not enough: the standard output log
+        handler defaults to ``critical`` - correctly, since stray output would
+        corrupt the interface once it is drawing - so a warning reaches only the
+        in-application log tab, which is of little use for a problem occurring
+        before the interface exists.
+
+        This runs in the window after configuration is loaded and before the
+        interface starts, where writing to the terminal is still safe.
+        """
+        if self.quiet_config or not (self.problems or self._notices):
+            return
+
+        for notice in self._notices:
+            print(f"euporie: {notice}", file=sys.stderr)  # noqa: T201
+
+        if not self.problems:
+            return
+
+        # Group by source file, since a value may come from any of several.
+        by_source: dict[str, list[ConfigProblem]] = {}
+        for problem in self.problems:
+            by_source.setdefault(problem.source, []).append(problem)
+
+        for source, problems in by_source.items():
+            count = len(problems)
+            print(  # noqa: T201
+                f"euporie: {count} invalid setting{'s' if count > 1 else ''}"
+                f" in {source}",
+                file=sys.stderr,
+            )
+            for problem in problems:
+                value = repr(problem.value)
+                # Keep the report to one line per problem: a rejected value may be
+                # arbitrarily long, such as a list of paths.
+                if len(value) > 60:
+                    value = f"{value[:57]}..."
+                print(  # noqa: T201
+                    f"  {problem.name} = {value}\n    {problem.message}",
+                    file=sys.stderr,
+                )

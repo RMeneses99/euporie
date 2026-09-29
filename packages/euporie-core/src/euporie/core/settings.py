@@ -95,6 +95,23 @@ log_level_stdout = Setting(
     """,
 )
 
+quiet_config = Setting(
+    name="quiet_config",
+    flags=["--quiet-config"],
+    type_=bool,
+    default=False,
+    help_="Do not report invalid configuration values",
+    description="""
+        By default, configuration values which fail validation are reported to the
+        standard error stream at startup, since they are silently ignored and would
+        otherwise be hard to diagnose.
+
+        Set this to :py:const:`True` to suppress that report - useful when
+        deliberately keeping settings which are not valid for the running version,
+        such as a configuration file shared between versions.
+    """,
+)
+
 log_config = Setting(
     name="log_config",
     flags=["--log-config"],

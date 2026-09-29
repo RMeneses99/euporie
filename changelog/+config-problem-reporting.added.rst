@@ -1,0 +1,1 @@
+Added a report of configuration values which fail validation, printed to standard error at startup, since such values are discarded silently and a mistyped setting is otherwise indistinguishable from one which was never written

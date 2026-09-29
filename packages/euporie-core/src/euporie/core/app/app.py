@@ -143,6 +143,7 @@ class BaseApp(ConfigurableApp, Application, ABC):
         core_settings.log_level,
         core_settings.log_level_stdout,
         core_settings.log_config,
+        core_settings.quiet_config,
         # Files
         core_settings.files,
         core_settings.backup_on_save,
