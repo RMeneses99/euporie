@@ -164,8 +164,10 @@ class LspClient:
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            # stderr=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            # Piped rather than discarded so that a server which starts and then
+            # fails can say why. Logged at debug level by ``_monitor_stderr``,
+            # since some servers write routine chatter here.
+            stderr=asyncio.subprocess.PIPE,
         )
         self.monitor_stdout_task = self.loop.create_task(self._monitor_stdout())
         self.monitor_stderr_task = self.loop.create_task(self._monitor_stderr())
@@ -175,11 +177,16 @@ class LspClient:
         await self.initialize(root)
 
     async def _monitor_stderr(self) -> None:
-        """Log LSP server standard error output."""
+        """Log LSP server standard error output.
+
+        Logged at debug level: servers use stderr for routine messages as well as
+        for errors, so this would be noisy at the default verbosity. Run with
+        ``--log-level debug`` to see why a server failed to start.
+        """
         while stderr := self.process.stderr:
             line = await stderr.readline()
             if line:
-                log.info(line.decode().rstrip())
+                log.debug("[%s] %s", self.name, line.decode().rstrip())
             else:
                 break
 

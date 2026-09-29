@@ -928,8 +928,11 @@ class BaseApp(ConfigurableApp, Application, ABC):
             name: The name of the LSP server to create a client for.
 
         Returns:
-            A new LSP client instance, or None if config is missing/invalid.
+            A new LSP client instance, or None if the config is missing or invalid,
+            or the server's executable is not installed.
         """
+        from shutil import which
+
         from euporie.core.lsp import LspClient
 
         if not (config := self.lsp_server_configs.get(name)):
@@ -938,6 +941,16 @@ class BaseApp(ConfigurableApp, Application, ABC):
 
         if not (command := config.get("command")):
             log.debug("LSP server %r has no command defined", name)
+            return None
+
+        # Several servers are configured by default for a given language, so an
+        # absent executable is the normal case rather than an error. Checking here
+        # keeps it out of the exception path below, which would otherwise log a
+        # traceback for every server the user has not installed.
+        if which(command[0]) is None:
+            log.info(
+                "Skipping language server %r: %r is not installed", name, command[0]
+            )
             return None
 
         settings: dict[str, Any] = config.get("settings", {})
