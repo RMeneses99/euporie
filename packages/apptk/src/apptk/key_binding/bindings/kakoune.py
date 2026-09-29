@@ -43,6 +43,7 @@ from apptk.filters import (
     is_read_only,
 )
 from apptk.filters.app import is_multiline, is_searching
+from apptk.filters.buffer import is_returnable
 from apptk.filters.modes import (
     kakoune_goto_mode,
     kakoune_insert_mode,
@@ -285,28 +286,22 @@ def fetch_clipboard_data(event: KeyPressEvent) -> ClipboardData:
 
 @add_cmd(
     keys=["escape"],
-    filter=kakoune_mode & buffer_has_focus & ~is_searching,
+    filter=kakoune_insert_mode,
     hidden=True,
-    name="kakoune-escape",
+    name="kakoune-leave-insert-mode",
 )
-def kakoune_escape(event: KeyPressEvent) -> None:
-    """Cancel whatever is pending, or do nothing in plain normal mode.
+def kakoune_leave_insert_mode(event: KeyPressEvent) -> None:
+    """Leave insert mode.
 
-    Kakoune's :kbd:`Escape` never leaves the buffer. Leaving a notebook cell takes
-    a second :kbd:`Escape`, which the notebook binds as a two-key sequence.
+    :kbd:`Escape` is the only way out of insert mode in Kakoune - ``<a-;>`` is a
+    different command, dropping to normal mode for a single command and returning.
+
+    The filter is deliberately ``kakoune_insert_mode`` alone. Kakoune leaves Escape
+    *unbound* in normal mode, so this must not match there: ``exitable_mode`` hands
+    the key to the host application in navigation mode, which is how euporie leaves
+    a notebook cell.
     """
-    state = _state(event)
-    if state.input_mode != InputMode.NAVIGATION:
-        enter_normal_mode(event)
-        return
-    if state.has_pending():
-        state.exit_submode()
-        state.clear_pending()
-        return
-    # Already in plain normal mode: reduce to the main selection, as Kakoune does.
-    ranges = _selections(event)
-    if len(ranges) > 1:
-        _apply(event, collapse_to_primary(ranges, state.primary_index), primary=0)
+    enter_normal_mode(event)
 
 
 @add_cmd(
@@ -2972,12 +2967,98 @@ def kakoune_unbound_key(event: KeyPressEvent) -> None:
     event.app.output.bell()
 
 
+# Prompt integration
+#
+# A mode has to cooperate with the host application's prompts, not only implement
+# its own keymap. These three are what every other editing mode carries and the
+# Kakoune port was missing: without them the only surviving binding for ``enter``
+# is the ``<any>`` self-insert, which silently drops the key because
+# ``"\r".isprintable()`` is False.
+
+
+@add_cmd(
+    keys=["enter"],
+    filter=kakoune_insert_mode & is_returnable & ~is_multiline,
+    hidden=True,
+    name="kakoune-accept-line",
+)
+def kakoune_accept_line(event: KeyPressEvent) -> None:
+    """Accept a single-line buffer which has an accept handler.
+
+    This is what executes euporie's command bar, so that ``:q!`` works.
+    """
+    event.current_buffer.validate_and_handle()
+
+
+@add_cmd(
+    keys=["enter"],
+    filter=kakoune_mode & is_searching,
+    hidden=True,
+    name="kakoune-accept-search",
+)
+def kakoune_accept_search(event: KeyPressEvent) -> None:
+    """Accept the search input, or apply a pending regex operation.
+
+    ``s``, ``S``, ``<a-k>`` and ``<a-K>`` borrow the search prompt, so the accept is
+    intercepted here and the selection operation applied instead of a search being
+    performed.
+    """
+    from apptk.search import accept_global_search, stop_global_search
+
+    target = event.app.layout.search_target_buffer_control
+    # The pending operation lives on the *target* buffer's state, not on
+    # ``app.kakoune_state``: while the prompt has focus the latter resolves the
+    # search buffer, which never held the operation.
+    if target is not None:
+        from apptk.key_binding.kakoune_state import get_state
+
+        if get_state(target.buffer).pending_regex_op is not None:
+            pattern = event.current_buffer.text
+            stop_global_search()
+            apply_pending_regex(target.buffer, pattern)
+            return
+
+    accept_global_search()
+
+
+@add_cmd(
+    keys=["escape"],
+    filter=kakoune_mode & is_searching,
+    hidden=True,
+    name="kakoune-stop-search",
+)
+def kakoune_stop_search(event: KeyPressEvent) -> None:
+    """Abort the search, discarding any pending regex operation.
+
+    Abandoning a prompt with :kbd:`Escape` is documented Kakoune behaviour. Clearing
+    the pending operation matters: without it an aborted prompt would leave the
+    operation armed, to fire against a later, unrelated search.
+    """
+    from apptk.key_binding.kakoune_state import get_state
+    from apptk.search import stop_global_search
+
+    # Clear the target's state when it resolves, and the current buffer's otherwise.
+    # ``search_target_buffer_control`` is None unless a search control has focus, and
+    # a pending operation left armed would fire against a later, unrelated search.
+    target = event.app.layout.search_target_buffer_control
+    buffers = [event.current_buffer]
+    if target is not None:
+        buffers.append(target.buffer)
+    for buffer in buffers:
+        state = get_state(buffer)
+        state.pending_regex_op = None
+        state.pending_regex_ranges = []
+    stop_global_search()
+
+
 # Loading
 
 #: Search commands, bound separately so that they are available while the search
 #: prompt has focus. An explicit list rather than a registry scan, because only
 #: these belong in the search bindings.
 KAKOUNE_SEARCH_COMMANDS = (
+    "kakoune-accept-search",
+    "kakoune-stop-search",
     "kakoune-search-forward",
     "kakoune-search-backward",
     "kakoune-search-next",

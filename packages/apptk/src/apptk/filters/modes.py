@@ -326,11 +326,11 @@ navigation_mode = (
 exitable_mode = (
     (vi_mode & ~vi_navigation_mode)
     | (helix_mode & ~helix_navigation_mode)
-    # Kakoune consumes Escape whenever there is anything to cancel, and also in
-    # plain normal mode - where Escape is a no-op, as in the real editor. Leaving a
-    # cell therefore needs a second Escape; see ``kakoune-exit-or-pass`` and the
-    # notebook's ``_exit_edit_mode``.
-    | kakoune_mode
+    # Gated on *not* being in navigation mode, exactly as the other modes are: a
+    # mode claims Escape while it still has state to unwind, and releases it in
+    # navigation mode so the host can use it. Kakoune leaves Escape unbound in
+    # normal mode, so euporie's ``_exit_edit_mode`` gets it and leaves the cell.
+    | (kakoune_mode & ~kakoune_navigation_mode)
     | (micro_mode & ~micro_insert_mode)
     | (emacs_mode & ~emacs_insert_mode)
 )

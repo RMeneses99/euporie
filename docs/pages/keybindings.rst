@@ -221,7 +221,7 @@ Several keys are spelled the same in both editors but do different things. If yo
 Differences from upstream Kakoune
 =================================
 
-:kbd:`Escape` behaves as it does in Kakoune - it returns to normal mode or cancels whatever is pending, and never leaves the buffer. Because a notebook cell still has to be left somehow, **pressing** :kbd:`Escape` **twice** exits the cell.
+:kbd:`Escape` leaves insert mode and abandons a prompt, exactly as it does in Kakoune. Kakoune leaves it *unbound* in normal mode, so euporie uses it there to leave the cell - the same key that leaves a cell in every other editing mode. Nothing is given up, because there is no upstream behaviour in that case to give up.
 
 Kakoune's shell filters (``|``, ``Alt+|``, ``!``, ``Alt+!`` and ``$``) are not bound. In a notebook the kernel is a better tool for transforming text than an external process, so these keys are left unbound rather than approximated. Tab conversion (``@`` and ``Alt+@``) and hook-disabling (``\``) are likewise absent.
 

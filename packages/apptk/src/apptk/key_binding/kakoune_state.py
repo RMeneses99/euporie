@@ -328,23 +328,6 @@ class KakouneState(ViState):
         self._pending_regex_op = None
         self._pending_regex_ranges = []
 
-    def has_pending(self) -> bool:
-        """Check whether anything is pending that :kbd:`Escape` should cancel.
-
-        Returns:
-            True when a sub-mode is active or a key is awaited.
-        """
-        return (
-            self._mode != KakouneMode.NORMAL
-            or self._pending_object is not None
-            or self._pending_char is not None
-            or self._waiting_for_register
-            or self._pending_replace_char
-            or self._pending_mark is not None
-            or self._pending_mark_combine is not None
-            or self._pending_regex_op is not None
-        )
-
     def reset(self) -> None:
         """Reset the state."""
         super().reset()
